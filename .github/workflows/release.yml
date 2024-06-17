@@ -39,7 +39,7 @@ permissions:
 on:
   push:
     tags:
-      - '*-?v[0-9]+*'
+      - "*-?v[0-9]+*"
 
 jobs:
   # Create the Github Release™ so the packages have something to be uploaded to
@@ -57,10 +57,6 @@ jobs:
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.0.7/cargo-dist-installer.sh | sh
       - id: create-release
         run: |
-          cargo dist plan --tag=${{ github.ref_name }} --output-format=json > dist-manifest.json
-          echo "dist plan ran successfully"
-          cat dist-manifest.json
-
           # Create the Github Release™ based on what cargo-dist thinks it should be
           ANNOUNCEMENT_TITLE=$(jq --raw-output ".announcement_title" dist-manifest.json)
           IS_PRERELEASE=$(jq --raw-output ".announcement_is_prerelease" dist-manifest.json)
@@ -85,12 +81,12 @@ jobs:
       matrix:
         # For these target platforms
         include:
-        - os: ubuntu-20.04
-          dist-args: --artifacts=local --target=x86_64-unknown-linux-gnu
-          install-dist: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.0.7/cargo-dist-installer.sh | sh
-        - os: windows-2019
-          dist-args: --artifacts=local --target=x86_64-pc-windows-msvc
-          install-dist: irm  https://github.com/axodotdev/cargo-dist/releases/download/v0.0.7/cargo-dist-installer.ps1 | iex
+          - os: ubuntu-20.04
+            dist-args: --artifacts=local --target=x86_64-unknown-linux-gnu
+            install-dist: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.0.7/cargo-dist-installer.sh | sh
+          - os: windows-2019
+            dist-args: --artifacts=local --target=x86_64-pc-windows-msvc
+            install-dist: irm  https://github.com/axodotdev/cargo-dist/releases/download/v0.0.7/cargo-dist-installer.ps1 | iex
 
     runs-on: ${{ matrix.os }}
     env:

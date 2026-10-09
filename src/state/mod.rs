@@ -339,6 +339,8 @@ pub struct Config {
     pub drg_pak_path: Option<PathBuf>,
     pub gui_theme: Option<GuiTheme>,
     pub sorting_config: Option<SortingConfig>,
+    #[serde(default)]
+    pub compress_pak: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -413,13 +415,16 @@ impl Default for Config!["0.0.0"] {
                 .map(DRGInstallation::main_pak),
             gui_theme: None,
             sorting_config: None,
+            compress_pak: false,
         }
     }
 }
 
 impl From<&VersionAnnotatedConfig> for MetaConfig {
-    fn from(_value: &VersionAnnotatedConfig) -> Self {
-        MetaConfig {}
+    fn from(value: &VersionAnnotatedConfig) -> Self {
+        MetaConfig {
+            compress_pak: value.compress_pak,
+        }
     }
 }
 
@@ -702,5 +707,19 @@ mod mod_data_tests {
 
         let any_required = mod_data.any_mod("default", |mc, _| mc.required);
         assert!(any_required);
+    }
+
+    #[test]
+    fn config_without_compress_pak_deserializes() {
+        use super::{MaybeVersionedConfig, VersionAnnotatedConfig};
+
+        let cfg: MaybeVersionedConfig = serde_json::from_str(
+            r#"{"version":"0.0.0","provider_parameters":{},"drg_pak_path":null,"gui_theme":null,"sorting_config":null}"#,
+        )
+        .unwrap();
+        let MaybeVersionedConfig::Versioned(cfg @ VersionAnnotatedConfig::V0_0_0(_)) = cfg else {
+            panic!("expected versioned 0.0.0 config");
+        };
+        assert!(!cfg.compress_pak);
     }
 }

@@ -131,7 +131,11 @@ pub struct Meta {
     pub config: MetaConfig,
 }
 #[derive(Debug, Serialize, Deserialize)]
-pub struct MetaConfig {}
+pub struct MetaConfig {
+    /// Zlib-compress files written to mods_P.pak. Off by default: the game decompresses
+    /// into memory on load anyway, so compression only trades integration time for disk.
+    pub compress_pak: bool,
+}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MetaMod {
     pub name: String,
@@ -200,7 +204,9 @@ mod test {
                     required: false,
                 })
                 .collect(),
-            config: MetaConfig {},
+            config: MetaConfig {
+                compress_pak: false,
+            },
         }
     }
 

@@ -1089,6 +1089,15 @@ impl App {
                         });
                         ui.end_row();
 
+                        ui.label("Compress mod bundle:")
+                            .on_hover_cursor(egui::CursorIcon::Help)
+                            .on_hover_text("Zlib-compress files in mods_P.pak.\nSmaller on disk, slower to integrate. The game decompresses everything into memory on load either way.");
+                        let config = &mut self.state.config;
+                        if ui.checkbox(&mut config.compress_pak, "").changed() {
+                            config.save().unwrap();
+                        }
+                        ui.end_row();
+
                         ui.label("Mod providers:");
                         ui.end_row();
 

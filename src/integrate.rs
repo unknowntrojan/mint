@@ -305,6 +305,7 @@ pub fn integrate<P: AsRef<Path>>(
                 .open(&path_mod_pak)?,
         ),
         &fsd_pak.files(),
+        config.compress_pak,
     )?;
 
     #[cfg(feature = "hook")]
@@ -537,10 +538,11 @@ fn format_soft_class<P: AsRef<PakPath>>(path: P) -> String {
 struct ModBundleWriter<W: Write + Seek> {
     pak_writer: PakWriter<W>,
     directories: HashMap<String, Dir>,
+    compress: bool,
 }
 
 impl<W: Write + Seek> ModBundleWriter<W> {
-    fn new(writer: W, fsd_paths: &[String]) -> Result<Self, IntegrationError> {
+    fn new(writer: W, fsd_paths: &[String], compress: bool) -> Result<Self, IntegrationError> {
         let mut directories: HashMap<String, Dir> = HashMap::new();
         for f in fsd_paths {
             let mut dir = &mut directories;
@@ -560,6 +562,7 @@ impl<W: Write + Seek> ModBundleWriter<W> {
                 .compression([repak::Compression::Zlib])
                 .writer(writer, repak::Version::V11, "../../../".to_string(), None),
             directories,
+            compress,
         })
     }
     /// Used to normalize match path case to existing files in the DRG pak.
@@ -580,7 +583,7 @@ impl<W: Write + Seek> ModBundleWriter<W> {
 
     fn write_file(&mut self, data: &[u8], path: &str) -> Result<(), IntegrationError> {
         self.pak_writer
-            .write_file(self.normalize_path(path).as_str(), true, data)?;
+            .write_file(self.normalize_path(path).as_str(), self.compress, data)?;
         Ok(())
     }
 

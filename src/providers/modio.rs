@@ -240,6 +240,14 @@ pub enum DrgModioError {
         url: String,
         mod_id: u32,
     },
+    #[snafu(display("mod.io returned no mod for <{url}> (mod_id = {mod_id})"))]
+    ModNotFound { url: String, mod_id: u32 },
+    #[snafu(display("mod.io returned no mod file {modfile_id} for <{url}> (mod_id = {mod_id})"))]
+    ModFileNotFound {
+        url: String,
+        mod_id: u32,
+        modfile_id: u32,
+    },
     #[snafu(display("encountered mod.io-related error: {msg}"))]
     GenericError { msg: &'static str },
 }
@@ -250,7 +258,9 @@ impl DrgModioError {
             DrgModioError::FetchModFilesFailed { mod_id, .. }
             | DrgModioError::FetchModFileFailed { mod_id, .. }
             | DrgModioError::FetchModFailed { mod_id, .. }
-            | DrgModioError::FetchDependenciesFailed { mod_id, .. } => Some(*mod_id),
+            | DrgModioError::FetchDependenciesFailed { mod_id, .. }
+            | DrgModioError::ModNotFound { mod_id, .. }
+            | DrgModioError::ModFileNotFound { mod_id, .. } => Some(*mod_id),
             _ => None,
         }
     }
@@ -322,8 +332,10 @@ impl DrgModio for modio::Modio {
         Ok(())
     }
 
+    // Single-resource GETs (`/mods/{id}`, `/mods/{id}/files/{id}`) intermittently 403 for
+    // non-admins (seen 2026-07), so everything goes through filtered list endpoints instead.
     async fn fetch_mod(&self, url: String, id: u32) -> Result<ModioMod, DrgModioError> {
-        use modio::filter::NotEq;
+        use modio::filter::{Eq, NotEq};
         use modio::mods::filters::Id;
 
         let files = self
@@ -339,37 +351,21 @@ impl DrgModio for modio::Modio {
             })?;
         let r#mod = self
             .game(MODIO_DRG_ID)
-            .mod_(id)
-            .get()
+            .mods()
+            .search(Id::eq(id))
+            .first()
             .await
-            .context(FetchModFailedSnafu { mod_id: id, url })?;
+            .with_context(|_| FetchModFailedSnafu {
+                mod_id: id,
+                url: url.clone(),
+            })?
+            .context(ModNotFoundSnafu { mod_id: id, url })?;
 
         Ok(ModioMod::new(r#mod, files))
     }
 
     async fn fetch_files(&self, url: String, mod_id: u32) -> Result<ModioMod, DrgModioError> {
-        use modio::filter::NotEq;
-        use modio::mods::filters::Id;
-
-        let files = self
-            .game(MODIO_DRG_ID)
-            .mod_(mod_id)
-            .files()
-            .search(Id::ne(0))
-            .collect()
-            .await
-            .with_context(|_| FetchModFilesFailedSnafu {
-                mod_id,
-                url: url.clone(),
-            })?;
-        let r#mod = self
-            .game(MODIO_DRG_ID)
-            .mod_(mod_id)
-            .get()
-            .await
-            .context(FetchModFailedSnafu { mod_id, url })?;
-
-        Ok(ModioMod::new(r#mod, files))
+        self.fetch_mod(url, mod_id).await
     }
 
     async fn fetch_file(
@@ -378,18 +374,25 @@ impl DrgModio for modio::Modio {
         mod_id: u32,
         modfile_id: u32,
     ) -> Result<modio::files::File, DrgModioError> {
-        let file = self
-            .game(MODIO_DRG_ID)
+        use modio::files::filters::Id;
+        use modio::filter::Eq;
+
+        self.game(MODIO_DRG_ID)
             .mod_(mod_id)
-            .file(modfile_id)
-            .get()
+            .files()
+            .search(Id::eq(modfile_id))
+            .first()
             .await
             .with_context(|_| FetchModFileFailedSnafu {
+                url: url.clone(),
+                mod_id,
+                modfile_id,
+            })?
+            .context(ModFileNotFoundSnafu {
                 url,
                 mod_id,
                 modfile_id,
-            })?;
-        Ok(file)
+            })
     }
 
     async fn fetch_dependencies(

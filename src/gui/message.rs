@@ -668,8 +668,8 @@ async fn self_update_async(
         .map_err(Into::into)
         .with_context(|_| SelfUpdateFailedSnafu)?
     {
-        let bytes_written = tmp_archive.write(&bytes).await?;
-        total_bytes_written += bytes_written;
+        tmp_archive.write_all(&bytes).await?;
+        total_bytes_written += bytes.len();
         if let Some(size) = size {
             tx.send(SelfUpdateProgress::Progress {
                 progress: total_bytes_written as u64,
@@ -679,6 +679,7 @@ async fn self_update_async(
             .unwrap();
         }
     }
+    tmp_archive.flush().await?;
 
     debug!(?tmp_dir);
     debug!(?tmp_archive_path);

@@ -31,6 +31,5 @@ windows = { version = "0.61.3", features = [
 mint_lib = { path = "../mint_lib" }
 bitflags = "2.9.3"
 widestring = "1.2.0"
-tokio = { workspace = true, features = ["full"] }
 tracing-appender = "0.2.3"
 proxy_dll = { git = "https://github.com/trumank/proxy_dll.git" }

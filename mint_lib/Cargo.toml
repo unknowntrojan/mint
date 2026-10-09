@@ -17,8 +17,12 @@ fs-err.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, optional = true }
 snafu.workspace = true
+
+[features]
+default = ["update"]
+update = ["dep:reqwest"]
 
 [build-dependencies]
 built = { version = "0.8.0", features = ["semver", "git2"] }

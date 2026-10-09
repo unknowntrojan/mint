@@ -1,5 +1,6 @@
 pub mod error;
 pub mod mod_info;
+#[cfg(feature = "update")]
 pub mod update;
 
 use std::{

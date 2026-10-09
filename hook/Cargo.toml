@@ -28,7 +28,7 @@ windows = { version = "0.61.3", features = [
   "Win32_System_Memory",
   "Win32_System_Threading",
 ] }
-mint_lib = { path = "../mint_lib" }
+mint_lib = { path = "../mint_lib", default-features = false }
 bitflags = "2.9.3"
 widestring = "1.2.0"
 tracing-appender = "0.2.3"

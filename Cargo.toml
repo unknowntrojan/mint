@@ -104,8 +104,12 @@ inherits = "release"
 debug = false
 strip = true
 
+[profile.release]
+opt-level = "s"
+lto = "thin"
+
 [profile.dev]
-opt-level = 3
+opt-level = "s"
 lto = "off"
 
 # Config for 'cargo dist'

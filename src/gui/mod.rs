@@ -320,6 +320,11 @@ impl App {
                          ui: &mut Ui,
                          color: Option<egui::Color32>,
                          hover_str: Option<&str>| {
+                            // egui <0.32 tinted disabled widget fills towards this colour; keep
+                            // that look while staying opaque (see disabled_alpha below)
+                            let fade = ui.visuals().widgets.noninteractive.weak_bg_fill;
+                            let color = color.map(|c| egui::ecolor::tint_color_towards(c, fade));
+
                             let search = searchable_text(tag_str, &self.search_string, {
                                 TextFormat {
                                     color: if color.is_some() {
@@ -646,6 +651,9 @@ impl App {
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        // tags are disabled buttons; egui fades those with alpha since 0.32, which
+                        // lets overflowing mod names show through
+                        ui.visuals_mut().disabled_alpha = 1.0;
                         ui_mod_tags(ctx, ui, info);
                     });
                 } else {
@@ -1695,7 +1703,7 @@ struct WindowLintReport;
 struct WindowLintsToggle;
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.needs_restart
             && let Some(original_exe_path) = &self.original_exe_path
         {
@@ -1725,8 +1733,10 @@ impl eframe::App for App {
         while let Ok(msg) = self.rx.try_recv() {
             msg.handle(self);
         }
+    }
 
-        // begin draw
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = &ui.ctx().clone();
 
         self.show_update_window(ctx);
         self.show_provider_parameters(ctx);
@@ -1735,7 +1745,7 @@ impl eframe::App for App {
         self.show_lints_toggle(ctx);
         self.show_lint_report(ctx);
 
-        egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
+        egui::Panel::bottom("bottom_panel").show(ui, |ui| {
             ui.with_layout(egui::Layout::right_to_left(Align::TOP), |ui| {
                 ui.add_enabled_ui(
                     self.integrate_rid.is_none()
@@ -1915,7 +1925,7 @@ impl eframe::App for App {
                 });
             });
         });
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             if self.integrate_rid.is_some() || self.update_rid.is_some() || self.lint_rid.is_some()
             {
                 ui.disable();
@@ -1968,15 +1978,16 @@ impl eframe::App for App {
                     // define multiline layouter to be able to show multiple lines in a single line widget
                     let font_id = FontSelection::default().resolve(ui.style());
                     let text_color = ui.visuals().widgets.inactive.text_color();
-                    let mut multiline_layouter = move |ui: &Ui, text: &str, wrap_width: f32| {
-                        let layout_job = LayoutJob::simple(
-                            text.to_string(),
-                            font_id.clone(),
-                            text_color,
-                            wrap_width,
-                        );
-                        ui.fonts(|f| f.layout_job(layout_job))
-                    };
+                    let mut multiline_layouter =
+                        move |ui: &Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
+                            let layout_job = LayoutJob::simple(
+                                text.as_str().to_string(),
+                                font_id.clone(),
+                                text_color,
+                                wrap_width,
+                            );
+                            ui.ctx().fonts_mut(|f| f.layout_job(layout_job))
+                        };
 
                     let resolve = ui.add_enabled(
                         self.resolve_mod_rid.is_none(),
@@ -2074,7 +2085,9 @@ impl eframe::App for App {
                         .raw
                         .dropped_files
                         .iter()
-                        .filter_map(|f| f.path.as_ref().map(|p| p.to_string_lossy()))
+                        .map(|f| f.path())
+                        .filter(|p| !p.as_os_str().is_empty())
+                        .map(|p| p.to_string_lossy())
                     {
                         mods.push_str(&f);
                         mods.push('\n');
@@ -2115,49 +2128,24 @@ fn is_committed(res: &egui::Response) -> bool {
     res.lost_focus() && res.ctx.input(|i| i.key_pressed(egui::Key::Enter))
 }
 
-/// A custom popup which does not automatically close when clicked.
-fn custom_popup_above_or_below_widget<R>(
-    ui: &Ui,
+/// A popup below a widget which does not automatically close when clicked.
+fn custom_popup_below_widget<R>(
     popup_id: egui::Id,
     widget_response: &egui::Response,
-    above_or_below: egui::AboveOrBelow,
     add_contents: impl FnOnce(&mut Ui) -> R,
 ) -> Option<R> {
-    if ui.memory(|mem| mem.is_popup_open(popup_id)) {
-        let (pos, pivot) = match above_or_below {
-            egui::AboveOrBelow::Above => (widget_response.rect.left_top(), Align2::LEFT_BOTTOM),
-            egui::AboveOrBelow::Below => (widget_response.rect.left_bottom(), Align2::LEFT_TOP),
-        };
-
-        let inner = egui::Area::new(popup_id)
-            .order(egui::Order::Foreground)
-            .constrain(true)
-            .fixed_pos(pos)
-            .pivot(pivot)
-            .show(ui.ctx(), |ui| {
-                // Note: we use a separate clip-rect for this area, so the popup can be outside the parent.
-                // See https://github.com/emilk/egui/issues/825
-                let frame = egui::Frame::popup(ui.style());
-                let frame_margin = frame.total_margin();
-                frame
-                    .show(ui, |ui| {
-                        ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
-                            ui.set_width(widget_response.rect.width() - frame_margin.sum().x);
-                            add_contents(ui)
-                        })
-                        .inner
-                    })
-                    .inner
-            })
-            .inner;
-
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            ui.memory_mut(|mem| mem.close_popup());
-        }
-        Some(inner)
-    } else {
-        None
-    }
+    egui::Popup::from_response(widget_response)
+        .id(popup_id)
+        .open_memory(None)
+        .close_behavior(egui::PopupCloseBehavior::IgnoreClicks)
+        .align(egui::RectAlign::BOTTOM_START)
+        .layout(Layout::top_down_justified(Align::LEFT))
+        .show(|ui| {
+            let frame_margin = egui::Frame::popup(ui.style()).total_margin();
+            ui.set_width(widget_response.rect.width() - frame_margin.sum().x);
+            add_contents(ui)
+        })
+        .map(|r| r.inner)
 }
 
 #[derive(Debug)]

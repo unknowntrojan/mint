@@ -1,4 +1,4 @@
-use super::{colors, custom_popup_above_or_below_widget, is_committed};
+use super::{colors, custom_popup_below_widget, is_committed};
 
 use crate::state::{ModData_v0_1_0 as ModData, ModProfile_v0_1_0 as ModProfile};
 
@@ -133,7 +133,7 @@ where
 
         let popup_id = ui.make_persistent_id(format!("add-{name}"));
         if response.clicked() {
-            ui.memory_mut(|mem| mem.open_popup(popup_id));
+            egui::Popup::open_id(ui.ctx(), popup_id);
         }
         mk_name_popup(
             entries,
@@ -160,7 +160,7 @@ where
             .on_hover_text_at_pointer(format!("Rename {name}"));
         let popup_id = ui.make_persistent_id(format!("rename-{name}"));
         if response.clicked() {
-            ui.memory_mut(|mem| mem.open_popup(popup_id));
+            egui::Popup::open_id(ui.ctx(), popup_id);
         }
         mk_name_popup(
             entries,
@@ -186,7 +186,7 @@ where
         .on_hover_text_at_pointer(format!("Duplicate {name}"));
     let popup_id = ui.make_persistent_id(format!("duplicate-{name}"));
     if response.clicked() {
-        ui.memory_mut(|mem| mem.open_popup(popup_id));
+        egui::Popup::open_id(ui.ctx(), popup_id);
     }
     mk_name_popup(
         entries,
@@ -237,43 +237,37 @@ fn mk_name_popup<E, N>(
 {
     let data_id = popup_id.with("data");
     let mut popup: NamePopup = ui.data(|data| data.get_temp(data_id)).unwrap_or_default();
-    popup.buffer_needs_prefill_and_focus = custom_popup_above_or_below_widget(
-        ui,
-        popup_id,
-        &response,
-        egui::AboveOrBelow::Below,
-        |ui| {
-            ui.set_min_width(200.0);
-            ui.vertical(|ui| {
-                if popup.buffer_needs_prefill_and_focus {
-                    popup.buffer = default_name(entries);
+    popup.buffer_needs_prefill_and_focus = custom_popup_below_widget(popup_id, &response, |ui| {
+        ui.set_min_width(200.0);
+        ui.vertical(|ui| {
+            if popup.buffer_needs_prefill_and_focus {
+                popup.buffer = default_name(entries);
+            }
+
+            let res = ui.add(
+                egui::TextEdit::singleline(&mut popup.buffer)
+                    .hint_text(format!("Enter new {name} name")),
+            );
+            if popup.buffer_needs_prefill_and_focus {
+                res.request_focus();
+            }
+
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    egui::Popup::close_id(ui.ctx(), popup_id);
                 }
 
-                let res = ui.add(
-                    egui::TextEdit::singleline(&mut popup.buffer)
-                        .hint_text(format!("Enter new {name} name")),
-                );
-                if popup.buffer_needs_prefill_and_focus {
-                    res.request_focus();
+                let invalid_name = popup.buffer.is_empty() || entries.contains(&popup.buffer);
+                let clicked = ui
+                    .add_enabled(!invalid_name, egui::Button::new("OK"))
+                    .clicked();
+                if !invalid_name && (clicked || is_committed(&res)) {
+                    egui::Popup::close_id(ui.ctx(), popup_id);
+                    accept(entries, std::mem::take(&mut popup.buffer));
                 }
-
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        ui.memory_mut(|mem| mem.close_popup());
-                    }
-
-                    let invalid_name = popup.buffer.is_empty() || entries.contains(&popup.buffer);
-                    let clicked = ui
-                        .add_enabled(!invalid_name, egui::Button::new("OK"))
-                        .clicked();
-                    if !invalid_name && (clicked || is_committed(&res)) {
-                        ui.memory_mut(|mem| mem.close_popup());
-                        accept(entries, std::mem::take(&mut popup.buffer));
-                    }
-                });
             });
-        },
-    )
+        });
+    })
     .is_none();
 
     ui.data_mut(|data| data.insert_temp(data_id, popup));

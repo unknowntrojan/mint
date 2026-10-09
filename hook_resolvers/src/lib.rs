@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "serde-resolvers", derive(Serialize, Deserialize))]
-pub struct GetServerName(pub usize);
+pub struct GetServerName(pub u64);
 impl_resolver_singleton!(collect, GetServerName);
 impl_resolver_singleton!(PEImage, GetServerName, |ctx| async {
     let patterns = [
@@ -40,7 +40,7 @@ impl_resolver_singleton!(PEImage, GetServerName, |ctx| async {
 
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "serde-resolvers", derive(Serialize, Deserialize))]
-pub struct FOnlineSessionSettingsSetFString(pub usize);
+pub struct FOnlineSessionSettingsSetFString(pub u64);
 impl_resolver_singleton!(collect, FOnlineSessionSettingsSetFString);
 impl_resolver_singleton!(PEImage, FOnlineSessionSettingsSetFString, |ctx| async {
     let patterns = ["48 89 5C 24 ?? 48 89 54 24 ?? 55 56 57 48 83 EC 40 49 8B F8 48 8D 69"];
@@ -50,7 +50,7 @@ impl_resolver_singleton!(PEImage, FOnlineSessionSettingsSetFString, |ctx| async 
 
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "serde-resolvers", derive(Serialize, Deserialize))]
-pub struct USessionHandlingFSDFillSessionSetttingInner(pub usize);
+pub struct USessionHandlingFSDFillSessionSetttingInner(pub u64);
 impl_resolver_singleton!(collect, USessionHandlingFSDFillSessionSetttingInner);
 impl_resolver_singleton!(
     PEImage,
@@ -67,7 +67,7 @@ impl_resolver_singleton!(
 
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "serde-resolvers", derive(Serialize, Deserialize))]
-pub struct ModsFName(pub usize);
+pub struct ModsFName(pub u64);
 impl_resolver_singleton!(collect, ModsFName);
 impl_resolver_singleton!(PEImage, ModsFName, |ctx| async {
     let strings = ctx
@@ -96,7 +96,7 @@ impl_resolver_singleton!(PEImage, ModsFName, |ctx| async {
 
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "serde-resolvers", derive(Serialize, Deserialize))]
-pub struct Disable(pub usize);
+pub struct Disable(pub u64);
 impl_resolver_singleton!(collect, Disable);
 impl_resolver_singleton!(PEImage, Disable, |ctx| async {
     let patterns = [

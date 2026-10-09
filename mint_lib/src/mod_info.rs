@@ -141,28 +141,94 @@ pub struct MetaMod {
     pub approval: ApprovalStatus,
     pub required: bool,
 }
+/// Budget for [`Meta::to_server_list_string`]. The string ends up JSON-wrapped in a Steam lobby
+/// value, which is capped at `k_cubChatMetadataMax` = 8192 bytes; past that `SetLobbyData` fails
+/// and hosting/invites break. The slack covers the JSON wrapper and escaping.
+const SERVER_LIST_MAX_BYTES: usize = 7 * 1024;
+
 impl Meta {
+    /// `mint;<version>;<code>;<name>;...`, Sandbox mods first. Truncated to
+    /// [`SERVER_LIST_MAX_BYTES`], with a trailing `V;(+N more)` entry if anything was dropped.
     pub fn to_server_list_string(&self) -> String {
         use itertools::Itertools;
 
-        ["mint".into(), self.version.to_string()]
-            .into_iter()
-            .chain(
-                self.mods
-                    .iter()
-                    .sorted_by_key(|m| (std::cmp::Reverse(m.approval), &m.name))
-                    .flat_map(|m| {
-                        [
-                            match m.approval {
-                                ApprovalStatus::Verified => 'V',
-                                ApprovalStatus::Approved => 'A',
-                                ApprovalStatus::Sandbox => 'S',
-                            }
-                            .into(),
-                            m.name.replace(';', ""),
-                        ]
-                    }),
-            )
-            .join(";")
+        let mut out = format!("mint;{}", self.version);
+        let mods = self
+            .mods
+            .iter()
+            .sorted_by_key(|m| (std::cmp::Reverse(m.approval), &m.name))
+            .collect::<Vec<_>>();
+
+        for (i, m) in mods.iter().enumerate() {
+            let code = match m.approval {
+                ApprovalStatus::Verified => 'V',
+                ApprovalStatus::Approved => 'A',
+                ApprovalStatus::Sandbox => 'S',
+            };
+            let entry = format!(";{code};{}", m.name.replace(';', ""));
+            let remaining = mods.len() - i;
+            // reserve room for the marker unless this is the last entry
+            let reserve = if remaining > 1 {
+                format!(";V;(+{remaining} more)").len()
+            } else {
+                0
+            };
+            if out.len() + entry.len() + reserve > SERVER_LIST_MAX_BYTES {
+                out.push_str(&format!(";V;(+{remaining} more)"));
+                break;
+            }
+            out.push_str(&entry);
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn meta(n: usize, approval: ApprovalStatus) -> Meta {
+        Meta {
+            version: "0.0.0".into(),
+            mods: (0..n)
+                .map(|i| MetaMod {
+                    name: format!("Some Reasonably Long Mod Name {i:04}"),
+                    version: String::new(),
+                    url: String::new(),
+                    author: String::new(),
+                    approval,
+                    required: false,
+                })
+                .collect(),
+            config: MetaConfig {},
+        }
+    }
+
+    #[test]
+    fn server_list_small_is_untruncated() {
+        let s = meta(2, ApprovalStatus::Sandbox).to_server_list_string();
+        assert_eq!(
+            s,
+            "mint;0.0.0;S;Some Reasonably Long Mod Name 0000;S;Some Reasonably Long Mod Name 0001"
+        );
+    }
+
+    #[test]
+    fn server_list_large_is_truncated_with_marker() {
+        let m = meta(1000, ApprovalStatus::Approved);
+        let s = m.to_server_list_string();
+        assert!(s.len() <= SERVER_LIST_MAX_BYTES, "{}", s.len());
+        let kept = s.matches(";A;").count();
+        assert!(s.ends_with(&format!(";V;(+{} more)", 1000 - kept)), "{s}");
+    }
+
+    #[test]
+    fn server_list_sandbox_kept_first() {
+        let mut m = meta(1000, ApprovalStatus::Verified);
+        m.mods.push(MetaMod {
+            approval: ApprovalStatus::Sandbox,
+            ..meta(1, ApprovalStatus::Sandbox).mods.remove(0)
+        });
+        assert!(m.to_server_list_string().starts_with("mint;0.0.0;S;"));
     }
 }

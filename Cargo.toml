@@ -38,7 +38,7 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-default = []
+default = ["hook"]
 hook = ["dep:hook"]
 debug = ["egui/deadlock_detection"]
 

@@ -413,10 +413,11 @@ impl DrgModio for modio::Modio {
         &self,
         name_id: &str,
     ) -> Result<Vec<ModioModResponse>, DrgModioError> {
-        use modio::filter::{Eq, In};
-        use modio::mods::filters::{NameId, Visible};
+        use modio::filter::Eq;
+        use modio::mods::filters::NameId;
 
-        let filter = NameId::eq(name_id).and(Visible::_in(vec![0, 1]));
+        // `visible-in` is admin-only since 2026-05 (403, error_ref 15025).
+        let filter = NameId::eq(name_id);
         Ok(self
             .game(MODIO_DRG_ID)
             .mods()

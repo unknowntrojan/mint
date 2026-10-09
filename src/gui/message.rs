@@ -696,21 +696,23 @@ async fn self_update_async(
             };
 
             info!("extracting downloaded update archive");
-            self_update::Extract::from_source(&tmp_archive_path)
-                .archive(self_update::ArchiveKind::Zip)
-                .extract_file(tmp_dir.path(), bin_name)
-                .map_err(Into::into)
-                .with_context(|_| SelfUpdateFailedSnafu)?;
+            let bin_path = tmp_dir.path().join(bin_name);
+            {
+                let mut archive = zip::ZipArchive::new(std::fs::File::open(&tmp_archive_path)?)
+                    .map_err(Into::into)
+                    .with_context(|_| SelfUpdateFailedSnafu)?;
+                let mut bin = archive
+                    .by_name(bin_name)
+                    .map_err(Into::into)
+                    .with_context(|_| SelfUpdateFailedSnafu)?;
+                std::io::copy(&mut bin, &mut std::fs::File::create(&bin_path)?)?;
+            }
 
             info!("replacing old executable with new executable");
-            let tmp_file = tmp_dir.path().join("replacement_tmp");
-            let bin_path = tmp_dir.path().join(bin_name);
-
+            // resolve before replacing: on Linux /proc/self/exe points at the unlinked inode after
             let original_exe_path = std::env::current_exe()?;
 
-            self_update::Move::from_source(&bin_path)
-                .replace_using_temp(&tmp_file)
-                .to_dest(&original_exe_path)
+            self_replace::self_replace(&bin_path)
                 .map_err(Into::into)
                 .with_context(|_| SelfUpdateFailedSnafu)?;
 

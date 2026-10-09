@@ -68,7 +68,7 @@ reqwest.workspace = true
 reqwest-middleware = "0.2.5"
 rfd = "0.15.4"
 rust-ini = "0.21.1"
-self_update = { version = "0.42.0", default-features = false, features = ["archive-zip", "rustls"] }
+self-replace = "1.5.0"
 semver = "1.0.26"
 serde.workspace = true
 serde_json.workspace = true

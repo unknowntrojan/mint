@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 pub mod gui;
 pub mod integrate;
 pub mod mod_lints;

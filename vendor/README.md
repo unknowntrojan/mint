@@ -19,8 +19,9 @@ else's git repo. Each directory keeps its own workspace and license; the root wo
 Everything not listed here is byte-identical to the revision above (minus `.git`).
 
 - `uasset_utils`: `unreal_asset` and `repak` point at the vendored copies instead of git.
-- `repak/oodle_loader`: never downloads the Oodle library (it must sit next to the executable;
-  the friendpack installers put it there). Drops `ureq`, `sha2`, `hex`; `libloading` 0.9 -> 0.8
+- `repak/oodle_loader`: never downloads the Oodle library; loads it from next to the executable,
+  else from mint's per-user install folder (`$XDG_DATA_HOME/mint`, `%LOCALAPPDATA%\mint`).
+  Drops `ureq`, `sha2`, `hex`; `libloading` 0.9 -> 0.8
   to share the copy eframe uses.
 - `modio-rs`: reqwest 0.11 -> 0.12, reqwest-middleware 0.2 -> 0.4 (+ `multipart`), http 0.2 -> 1,
   bitflags 1 -> 2 (explicit derives, `.bits` -> `.bits()`), serde_with 2 -> 3. Gets mint off

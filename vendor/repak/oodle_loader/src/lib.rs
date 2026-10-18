@@ -1,7 +1,8 @@
 //! Modified for mint (see vendor/README.md).
 //!
-//! Change: the Oodle library is never downloaded. It must already sit next to the executable
-//! (the friendpack installers put it there); otherwise loading fails with [`Error::Missing`].
+//! Change: the Oodle library is never downloaded. It is loaded from next to the executable or,
+//! failing that, from mint's per-user install folder (where the friendpack installers put it);
+//! otherwise loading fails with [`Error::Missing`].
 
 use std::sync::OnceLock;
 
@@ -133,8 +134,8 @@ static OODLE_PLATFORM: OodlePlatform = OodlePlatform {
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("Oodle library not found at {0}; place it next to the executable")]
-    Missing(std::path::PathBuf),
+    #[error("Oodle library not found, looked for: {0:?}")]
+    Missing(Vec<std::path::PathBuf>),
     #[error("Oodle compression failed")]
     CompressionFailed,
     #[error("Oodle initialization failed previously")]
@@ -144,12 +145,28 @@ pub enum Error {
     #[error("Oodle libloading error {0:?}")]
     LibLoading(#[from] libloading::Error),
 }
+/// mint's per-user install folder: `$XDG_DATA_HOME/mint` (default `~/.local/share/mint`) on unix,
+/// `%LOCALAPPDATA%\mint` on Windows.
+fn install_dir() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let absolute = |v: std::ffi::OsString| Some(PathBuf::from(v)).filter(|p| p.is_absolute());
+    let base = if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").and_then(absolute)
+    } else {
+        std::env::var_os("XDG_DATA_HOME")
+            .and_then(absolute)
+            .or_else(|| std::env::var_os("HOME").and_then(absolute).map(|h| h.join(".local/share")))
+    };
+    base.map(|b| b.join("mint"))
+}
+
 fn locate_oodle() -> Result<std::path::PathBuf> {
-    let oodle_path = std::env::current_exe()?.with_file_name(OODLE_PLATFORM.name);
-    if !oodle_path.exists() {
-        return Err(Error::Missing(oodle_path));
+    let mut candidates = vec![std::env::current_exe()?.with_file_name(OODLE_PLATFORM.name)];
+    candidates.extend(install_dir().map(|d| d.join(OODLE_PLATFORM.name)));
+    match candidates.iter().find(|p| p.is_file()) {
+        Some(p) => Ok(p.clone()),
+        None => Err(Error::Missing(candidates)),
     }
-    Ok(oodle_path)
 }
 
 pub struct Oodle {

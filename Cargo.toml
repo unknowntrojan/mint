@@ -113,6 +113,11 @@ lto = "thin"
 opt-level = "s"
 lto = "off"
 
+# mint embeds the hook DLL; with debuginfo it bloats every dev build by ~100 MB.
+[profile.dev.package.hook]
+debug = false
+strip = true
+
 # Config for 'cargo dist'
 [workspace.metadata.dist]
 # The preferred cargo-dist version to use in CI (Cargo.toml SemVer syntax)

@@ -29,3 +29,6 @@ Everything not listed here is byte-identical to the revision above (minus `.git`
   Tests and doc examples updated for the `skip_data` argument the `patches` branch added to
   `Asset::new` (they didn't compile upstream).
 - `uasset_utils`: typed-path 0.8 -> 0.12 (same as zip).
+- `patternsleuth`: itertools 0.12 -> 0.15, strum 0.25 -> 0.27, windows 0.52 -> 0.61, object 0.32 -> 0.40
+  (section flag checks adapted to its newtype flags). Hook resolvers verified to return identical
+  results against FSD-Win64-Shipping.exe before/after.

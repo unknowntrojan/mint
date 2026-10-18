@@ -4,7 +4,8 @@
 #                            Small; re-post it whenever mint changes.
 #   mint-mods-DATE.zip       your config (incl. the mod.io OAuth token), profiles (mod_data.json)
 #                            and mod cache. Big; friends only need it once. The DRG pak path is
-#                            nulled out; the installer fills it in per machine.
+#                            nulled out; the installer fills it in per machine. Your publish key
+#                            for the preset server is left out.
 set -euo pipefail
 
 usage() {
@@ -126,6 +127,7 @@ cfg = json.load(open(sys.argv[1], encoding="utf-8"))
 if "drg_pak_path" not in cfg:
     sys.exit("config.json has no drg_pak_path key; unexpected format")
 cfg["drg_pak_path"] = None  # install scripts replace the literal `"drg_pak_path": null`
+cfg.pop("publish_key", None)  # lets whoever holds it publish presets; it stays with you
 with open(sys.argv[2], "w", encoding="utf-8", newline="\n") as f:
     json.dump(cfg, f, indent=2)
 EOF

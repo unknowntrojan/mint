@@ -5,6 +5,7 @@ members = [
   "mint_lib",
   "hook",
   "hook_resolvers",
+  "remote_preset",
 ]
 
 [workspace.package]

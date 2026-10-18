@@ -1,0 +1,14 @@
+[package]
+name = "remote_preset"
+description = "Format of mod presets published to a mint server"
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -1,6 +1,6 @@
 # Build from the repository root:
-#   docker build -f server/Dockerfile -t mint-server .
-# (or `docker compose up -d --build` in server/)
+#   docker build -f server/Dockerfile -t mint-server:local .
+# deploy.sh does this on the NAS.
 
 FROM rust:1-slim-bookworm AS build
 # The workspace uses cargo's nightly-only artifact dependencies (for the hook DLL), so even the

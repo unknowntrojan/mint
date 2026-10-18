@@ -1,0 +1,37 @@
+# Deployed by deploy.sh as /data/docker/mint/docker-compose.yml on the NAS. The image is built
+# from this repo by deploy.sh; the host has no source tree.
+
+networks:
+  mint:
+    external: false
+
+services:
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel run
+    container_name: tunnel_mint
+    depends_on:
+      - mint-server
+    networks:
+      - mint
+    environment:
+      # .env; routes are set in the Cloudflare dashboard:
+      # mint.kohlroulade.lgbt -> http://mint-server:8080
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+      TUNNEL_TRANSPORT_PROTOCOL: quic
+
+  mint-server:
+    image: mint-server:local
+    pull_policy: never
+    restart: unless-stopped
+    container_name: mint-server
+    networks:
+      - mint
+    expose:
+      - 8080
+    volumes:
+      # presets, revision history and publish keys; back this up
+      - ./data:/data
+    environment:
+      RUST_LOG: info

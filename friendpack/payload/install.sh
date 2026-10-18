@@ -38,6 +38,21 @@ if pgrep -x mint >/dev/null; then
 	exit 1
 fi
 
+# Steam rewrites its config (incl. DRG's launch options) when it exits, so it has to be closed
+# before anything is changed. Waits until it is.
+wait_for_steam_closed() {
+	while pgrep -x steam >/dev/null; do
+		if [[ ! -t 0 ]]; then
+			echo "Steam is running. Close it completely (tray icon > Exit) and run this again." >&2
+			exit 1
+		fi
+		echo "Steam is running. You must close Steam completely (tray icon > Exit)."
+		read -r -s -n1 -p "Press any key to continue..."
+		echo
+	done
+}
+wait_for_steam_closed
+
 # Written next to config.json once the mods pack has been imported successfully.
 SENTINEL=$config_home/mint/friendpack-installed
 LAUNCH_FLAGS=(-disablemodding -nosplash)
@@ -99,18 +114,7 @@ set_launch_opts() {
 		manual_launch_opts
 		return
 	fi
-	while pgrep -x steam >/dev/null; do
-		if [[ ! -t 0 ]]; then
-			echo "  Steam is running (it overwrites launch options on exit), skipping."
-			manual_launch_opts
-			return
-		fi
-		read -r -p "  Steam is running. Fully exit it (tray icon > Exit), then press Enter. [s = skip] " ans
-		if [[ $ans == [sS]* ]]; then
-			manual_launch_opts
-			return
-		fi
-	done
+	wait_for_steam_closed
 	local root f any=0
 	while IFS= read -r root; do
 		for f in "$root"/userdata/[1-9]*/config/localconfig.vdf; do

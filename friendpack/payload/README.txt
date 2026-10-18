@@ -14,10 +14,10 @@ First time:
      Linux:   ./install.sh        (or: bash install.sh)
    It finds Deep Rock Galactic via Steam. If it can't, it asks you for the
    FSD-WindowsNoEditor.pak (Steam) or FSD-WinGDK.pak (Xbox/Game Pass) file.
-   It also adds "-disablemodding -nosplash" to DRG's Steam launch options (keeping any
-   you already have). Steam has to be fully closed for that; it will ask. If it can't,
-   set them by hand: Steam > Library > Deep Rock Galactic > Properties > General >
-   Launch Options.
+   Steam has to be fully closed first (tray icon > Exit); the installer waits until it is.
+   It adds "-disablemodding -nosplash" to DRG's Steam launch options (keeping any you
+   already have). If that fails, set them by hand: Steam > Library > Deep Rock Galactic >
+   Properties > General > Launch Options.
 4. Start mint (Start Menu / Desktop / app menu), pick a profile, click "Install mods".
    DRG must be closed while installing/uninstalling mods.
 

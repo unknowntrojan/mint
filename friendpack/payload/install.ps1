@@ -167,6 +167,16 @@ function Set-VdfLaunchOptions([string]$path, [string[]]$flags) {
     "'$current' -> '$new' (backup: localconfig.vdf.bak-$ts)"
 }
 
+# Steam rewrites its config (incl. DRG's launch options) when it exits, so it has to be closed
+# before anything is changed. Waits until it is.
+function Wait-SteamClosed {
+    while (Get-Process -Name steam -ErrorAction SilentlyContinue) {
+        Write-Host 'Steam is running. You must close Steam completely (tray icon > Exit).'
+        Write-Host 'Press any key to continue...'
+        try { [void]$Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') } catch { [void](Read-Host) }
+    }
+}
+
 function Write-ManualLaunchOptions {
     $script:LaunchOk = $false
     Write-Host '  Set it by hand: Steam > Library > Deep Rock Galactic > Properties > General >'
@@ -176,10 +186,7 @@ function Write-ManualLaunchOptions {
 function Set-DrgLaunchOptions {
     Write-Host ''
     Write-Host "Setting DRG launch options ($($LaunchFlags -join ' '))..."
-    while (Get-Process -Name steam -ErrorAction SilentlyContinue) {
-        $ans = Read-Host '  Steam is running (it overwrites launch options on exit). Fully exit it (tray icon > Exit), then press Enter. [s = skip]'
-        if ($ans -like 's*') { Write-ManualLaunchOptions; return }
-    }
+    Wait-SteamClosed
     $any = $false
     foreach ($root in Get-SteamRoots) {
         $userdata = Join-Path $root 'userdata'
@@ -294,6 +301,8 @@ function Import-ModsPack([string]$src) {
     [IO.File]::WriteAllBytes($Sentinel, [byte[]]@())
     Write-Host '  Mods pack imported.'
 }
+
+Wait-SteamClosed
 
 # --- 1. mods pack (once) ---
 if (Test-Path -LiteralPath $Sentinel) {

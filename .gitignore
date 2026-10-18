@@ -3,3 +3,5 @@
 /.idea
 /result
 .claude/
+# Oodle libraries for friendpack bundles (Epic's binaries, not redistributed here)
+/friendpack/oodle/

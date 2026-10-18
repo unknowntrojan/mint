@@ -40,6 +40,7 @@ use crate::gui::find_string::searchable_text;
 use crate::mod_lints::{LintId, LintReport, SplitAssetPair};
 use crate::providers::ProviderError;
 use crate::state::SortingConfig;
+use crate::state::mod_list::DeletedMod;
 use crate::{
     MintError,
     integrate::uninstall,
@@ -160,6 +161,8 @@ pub struct App {
     self_update_rid: Option<MessageHandle<SelfUpdateProgress>>,
     original_exe_path: Option<PathBuf>,
     problematic_mod_id: Option<u32>,
+    /// Mods deleted this session, most recent last, for "Undo Deletion".
+    deleted_mods: Vec<DeletedMod>,
 }
 
 #[derive(Default)]
@@ -252,6 +255,7 @@ impl App {
             self_update_rid: None,
             original_exe_path: None,
             problematic_mod_id: None,
+            deleted_mods: Vec::new(),
         })
     }
 
@@ -807,7 +811,7 @@ impl App {
             ctx.needs_save = true;
         }
         if let Some(index) = ctx.btn_remove {
-            mod_data.remove_mod(index);
+            self.deleted_mods.extend(mod_data.remove_mod(index));
             ctx.needs_save = true;
         }
 
@@ -1896,6 +1900,26 @@ impl eframe::App for App {
                 }
                 if ui.button("⚙").on_hover_text("Open settings").clicked() {
                     self.settings_window = Some(WindowSettings::new(&self.state));
+                }
+                if let Some(last) = self.deleted_mods.last() {
+                    let name = last
+                        .spec()
+                        .map(|spec| {
+                            self.state
+                                .store
+                                .get_mod_info(spec)
+                                .map_or_else(|| spec.url.clone(), |info| info.name)
+                        })
+                        .unwrap_or_default();
+                    if ui
+                        .button("Undo Deletion")
+                        .on_hover_text(format!("Restore {name}"))
+                        .clicked()
+                    {
+                        let deleted = self.deleted_mods.pop().unwrap();
+                        self.state.mod_data.restore_mod(deleted);
+                        self.state.mod_data.save().unwrap();
+                    }
                 }
                 if let Some(available_update) = &self.available_update
                     && ui

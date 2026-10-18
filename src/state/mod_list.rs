@@ -6,9 +6,10 @@
 //! [`ModData::normalize_shared_list`] reconciles profiles that disagree (e.g. files written by older
 //! versions).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::{ModConfig, ModData_v0_1_0 as ModData, ModOrGroup, ModProfile_v0_1_0 as ModProfile};
+use crate::providers::ModSpecification;
 
 /// Identifies an entry across profiles. mod.io mods are identified by mod ID (falling back to the
 /// slug), so the same mod pinned to different versions is still one entry.
@@ -54,6 +55,23 @@ fn shift<T>(from: usize, to: usize, items: &mut [T]) {
         }
     } else if let Some(slice) = items.get_mut(to..=from) {
         slice.rotate_right(1.min(slice.len()));
+    }
+}
+
+/// A mod removed with [`ModData::remove_mod`], with what each profile had for it.
+#[derive(Debug, Clone)]
+pub struct DeletedMod {
+    index: usize,
+    entries: BTreeMap<String, ModOrGroup>,
+}
+
+impl DeletedMod {
+    /// The deleted mod (`None` for a mod group).
+    pub fn spec(&self) -> Option<&ModSpecification> {
+        match self.entries.values().next()? {
+            ModOrGroup::Individual(mc) => Some(&mc.spec),
+            ModOrGroup::Group { .. } => None,
+        }
     }
 }
 
@@ -153,12 +171,41 @@ impl ModData {
         }
     }
 
-    /// Removes an entry from every profile.
-    pub fn remove_mod(&mut self, index: usize) {
-        for profile in self.profiles.values_mut() {
+    /// Removes an entry from every profile. Restore it with [`ModData::restore_mod`].
+    pub fn remove_mod(&mut self, index: usize) -> Option<DeletedMod> {
+        let mut entries = BTreeMap::new();
+        for (name, profile) in self.profiles.iter_mut() {
             if index < profile.mods.len() {
-                profile.mods.remove(index);
+                entries.insert(name.clone(), profile.mods.remove(index));
             }
+        }
+        (!entries.is_empty()).then_some(DeletedMod { index, entries })
+    }
+
+    /// Puts a removed entry back where it was, with each profile's state from before. Profiles
+    /// created since get it disabled; if the mod was added again in the meantime, that entry is
+    /// replaced.
+    pub fn restore_mod(&mut self, deleted: DeletedMod) {
+        let Some(template) = deleted.entries.values().next().cloned() else {
+            return;
+        };
+        let key = entry_key(&template);
+        if let Some(index) = self
+            .get_active_profile()
+            .mods
+            .iter()
+            .position(|m| entry_key(m) == key)
+        {
+            self.remove_mod(index);
+        }
+        for (name, profile) in self.profiles.iter_mut() {
+            let entry = deleted
+                .entries
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| disabled(&template));
+            let at = deleted.index.min(profile.mods.len());
+            profile.mods.insert(at, entry);
         }
     }
 
@@ -198,8 +245,6 @@ impl ModData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::ModSpecification;
-    use std::collections::BTreeMap;
 
     fn m(url: &str, enabled: bool) -> ModOrGroup {
         ModOrGroup::Individual(ModConfig {
@@ -304,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn add_move_remove_keep_profiles_in_lockstep() {
+    fn add_move_remove_restore_keep_profiles_in_lockstep() {
         let mut d = data(
             "a",
             &[
@@ -327,13 +372,20 @@ mod tests {
         assert_shared(&d);
         assert_eq!(urls(&d, "b"), ["x", "y", "new"]);
 
-        d.remove_mod(1);
+        let deleted = d.remove_mod(1).unwrap();
         assert_shared(&d);
         assert_eq!(urls(&d, "a"), ["x", "new"]);
 
         d.add_profile("c");
         assert_eq!(urls(&d, "c"), ["x", "new"]);
         assert_eq!(enabled(&d, "c"), [false, false]);
+
+        d.restore_mod(deleted);
+        assert_shared(&d);
+        assert_eq!(urls(&d, "a"), ["x", "y", "new"]);
+        assert_eq!(enabled(&d, "a"), [true, false, true]);
+        assert_eq!(enabled(&d, "b"), [false, true, false]);
+        assert_eq!(enabled(&d, "c"), [false, false, false]);
     }
 
     #[test]
@@ -351,6 +403,21 @@ mod tests {
         assert_eq!(urls(&d, "a"), ["x"]);
         assert_eq!(enabled(&d, "a"), [true]);
         assert_eq!(enabled(&d, "b"), [true]);
+    }
+
+    #[test]
+    fn restore_after_re_adding_replaces_the_new_entry() {
+        let mut d = data("a", &[("a", vec![m("x", false), m("y", true)])]);
+        let deleted = d.remove_mod(1).unwrap();
+        d.add_mod(ModConfig {
+            spec: ModSpecification::new("y".into()),
+            required: false,
+            enabled: false,
+            priority: 0,
+        });
+        d.restore_mod(deleted);
+        assert_eq!(urls(&d, "a"), ["x", "y"]);
+        assert_eq!(enabled(&d, "a"), [false, true]);
     }
 
     #[test]

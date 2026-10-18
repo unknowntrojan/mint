@@ -32,3 +32,5 @@ Everything not listed here is byte-identical to the revision above (minus `.git`
 - `patternsleuth`: itertools 0.12 -> 0.15, strum 0.25 -> 0.27, windows 0.52 -> 0.61, object 0.32 -> 0.40
   (section flag checks adapted to its newtype flags). Hook resolvers verified to return identical
   results against FSD-Win64-Shipping.exe before/after.
+- `proxy_dll`: windows-sys 0.59 -> 0.61 (`BOOL` moved to `windows_sys::core`). Hook DLL exports
+  unchanged.

@@ -4058,7 +4058,7 @@ version = "0.1.0"
 dependencies = [
  "msvc_def",
  "proxy_dll_proc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4069,7 +4069,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

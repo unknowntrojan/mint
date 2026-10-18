@@ -11,4 +11,4 @@ syn = { version = "2", features = ["extra-traits", "full"] }
 quote = "1.0.37"
 proc-macro2 = "1.0.87"
 msvc_def.workspace = true
-windows-sys = "0.59.0"
+windows-sys = "0.61"

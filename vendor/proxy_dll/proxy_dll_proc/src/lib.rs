@@ -109,8 +109,9 @@ pub fn proxy_dll(input: TokenStream) -> TokenStream {
             }
 
             use ::proxy_dll::windows_sys::{
+                core::BOOL,
                 Win32::{
-                    Foundation::{FreeLibrary, BOOL, HMODULE, MAX_PATH},
+                    Foundation::{FreeLibrary, HMODULE, MAX_PATH},
                     System::{
                         LibraryLoader::{GetProcAddress, LoadLibraryA, LoadLibraryW},
                         SystemInformation::GetSystemDirectoryW,

@@ -19,3 +19,6 @@ else's git repo. Each directory keeps its own workspace and license; the root wo
 Everything not listed here is byte-identical to the revision above (minus `.git`).
 
 - `uasset_utils`: `unreal_asset` and `repak` point at the vendored copies instead of git.
+- `repak/oodle_loader`: never downloads the Oodle library (it must sit next to the executable;
+  the friendpack installers put it there). Drops `ureq`, `sha2`, `hex`; `libloading` 0.9 -> 0.8
+  to share the copy eframe uses.

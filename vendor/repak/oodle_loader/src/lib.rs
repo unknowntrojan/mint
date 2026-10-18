@@ -1,3 +1,8 @@
+//! Modified for mint (see vendor/README.md).
+//!
+//! Change: the Oodle library is never downloaded. It must already sit next to the executable
+//! (the friendpack installers put it there); otherwise loading fails with [`Error::Missing`].
+
 use std::sync::OnceLock;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -97,103 +102,53 @@ mod oodle_lz {
     pub type SetPrintf = unsafe extern "system" fn(printf: *const ());
 }
 
-static OODLE_VERSION: &str = "2.9.10";
-static OODLE_BASE_URL: &str = "https://github.com/WorkingRobot/OodleUE/raw/refs/heads/main/Engine/Source/Programs/Shared/EpicGames.Oodle/Sdk/";
-
 struct OodlePlatform {
-    path: &'static str,
     name: &'static str,
-    hash: &'static str,
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 static OODLE_PLATFORM: OodlePlatform = OodlePlatform {
-    path: "linux/lib",
     name: "liboo2corelinux64.so.9",
-    hash: "ed7e98f70be1254a80644efd3ae442ff61f854a2fe9debb0b978b95289884e9c",
 };
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 static OODLE_PLATFORM: OodlePlatform = OodlePlatform {
-    path: "linuxarm/lib",
     name: "liboo2corelinuxarm64.so.9",
-    hash: "161a8ecca8cc2d4ea6469779c2cc529ed5bb2765d99466273c29fdbef4657374",
 };
 
 #[cfg(all(target_os = "linux", target_arch = "arm"))]
 static OODLE_PLATFORM: OodlePlatform = OodlePlatform {
-    path: "linuxarm/lib",
     name: "liboo2corelinuxarm32.so.9",
-    hash: "83cda016c033844fe650e49fac4cc19ff0a0fb4a3c9a7576a320ea39a9e4626b",
 };
 
 #[cfg(target_os = "macos")]
 static OODLE_PLATFORM: OodlePlatform = OodlePlatform {
-    path: "mac/lib",
     name: "liboo2coremac64.2.9.10.dylib",
-    hash: "b09af35f6b84a61e2b6488495c7927e1cef789b969128fa1c845e51a475ec501",
 };
 
 #[cfg(windows)]
 static OODLE_PLATFORM: OodlePlatform = OodlePlatform {
-    path: "win/redist",
     name: "oo2core_9_win64.dll",
-    hash: "6f5d41a7892ea6b2db420f2458dad2f84a63901c9a93ce9497337b16c195f457",
 };
-
-fn url() -> String {
-    format!(
-        "{OODLE_BASE_URL}/{}/{}/{}",
-        OODLE_VERSION, OODLE_PLATFORM.path, OODLE_PLATFORM.name
-    )
-}
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("Oodle lib hash mismatch expected: {expected} got {found}")]
-    HashMismatch { expected: String, found: String },
+    #[error("Oodle library not found at {0}; place it next to the executable")]
+    Missing(std::path::PathBuf),
     #[error("Oodle compression failed")]
     CompressionFailed,
     #[error("Oodle initialization failed previously")]
     InitializationFailed,
     #[error("IO error {0:?}")]
     Io(#[from] std::io::Error),
-    #[error("ureq error {0:?}")]
-    Ureq(Box<ureq::Error>),
     #[error("Oodle libloading error {0:?}")]
     LibLoading(#[from] libloading::Error),
 }
-impl From<ureq::Error> for Error {
-    fn from(value: ureq::Error) -> Self {
-        Self::Ureq(value.into())
-    }
-}
-
-fn check_hash(buffer: &[u8]) -> Result<()> {
-    use sha2::{Digest, Sha256};
-
-    let mut hasher = Sha256::new();
-    hasher.update(buffer);
-    let hash = hex::encode(hasher.finalize());
-    if hash != OODLE_PLATFORM.hash {
-        return Err(Error::HashMismatch {
-            expected: OODLE_PLATFORM.hash.into(),
-            found: hash,
-        });
-    }
-
-    Ok(())
-}
-
-fn fetch_oodle() -> Result<std::path::PathBuf> {
+fn locate_oodle() -> Result<std::path::PathBuf> {
     let oodle_path = std::env::current_exe()?.with_file_name(OODLE_PLATFORM.name);
     if !oodle_path.exists() {
-        let buffer = ureq::get(&url()).call()?.into_body().read_to_vec()?;
-        check_hash(&buffer)?;
-        std::fs::write(&oodle_path, buffer)?;
+        return Err(Error::Missing(oodle_path));
     }
-    // don't check existing file to allow user to substitute other versions
-    // check_hash(&std::fs::read(&oodle_path)?)?;
     Ok(oodle_path)
 }
 
@@ -282,7 +237,7 @@ impl Oodle {
 static OODLE: OnceLock<Option<Oodle>> = OnceLock::new();
 
 fn load_oodle() -> Result<Oodle> {
-    let path = fetch_oodle()?;
+    let path = locate_oodle()?;
     unsafe {
         let library = libloading::Library::new(path)?;
         Oodle::new(library)
@@ -313,6 +268,7 @@ mod test {
     use super::*;
 
     #[test]
+    #[ignore = "needs the Oodle library next to the test binary"]
     fn test_oodle() {
         let oodle = oodle().unwrap();
 

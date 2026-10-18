@@ -7,8 +7,5 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-libloading = "0.9"
-ureq = "3.1"
-hex = { workspace = true }
-sha2 = "0.10.9"
+libloading = "0.8"
 thiserror = "2.0.17"

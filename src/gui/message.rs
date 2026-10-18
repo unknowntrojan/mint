@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::ops::DerefMut;
 use std::time::SystemTime;
 use std::{collections::HashMap, sync::Arc};
 
@@ -18,7 +17,6 @@ use super::{
 use crate::gui::LastAction;
 use crate::integrate::*;
 use crate::mod_lints::{LintId, LintReport};
-use crate::state::{ModData_v0_1_0 as ModData, ModOrGroup};
 use crate::*;
 use crate::{
     providers::{FetchProgress, ModInfo, ModStore},
@@ -136,21 +134,12 @@ impl ResolveMods {
                         };
 
                         if add {
-                            let ModData {
-                                active_profile,
-                                profiles,
-                                ..
-                            } = app.state.mod_data.deref_mut().deref_mut();
-
-                            profiles.get_mut(active_profile).unwrap().mods.insert(
-                                0,
-                                ModOrGroup::Individual(ModConfig {
-                                    spec: info.spec.clone(),
-                                    required: info.suggested_require,
-                                    enabled: true,
-                                    priority: 0,
-                                }),
-                            );
+                            app.state.mod_data.add_mod(ModConfig {
+                                spec: info.spec.clone(),
+                                required: info.suggested_require,
+                                enabled: true,
+                                priority: 0,
+                            });
                         }
                     }
                     app.resolve_mod.clear();

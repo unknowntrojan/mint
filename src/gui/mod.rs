@@ -266,12 +266,14 @@ impl App {
             needs_save: bool,
             scroll_to_match: bool,
             btn_remove: Option<usize>,
+            drag: Option<egui_dnd::DragUpdate>,
             add_deps: Option<Vec<ModSpecification>>,
         }
         let mut ctx = Ctx {
             needs_save: false,
             scroll_to_match: self.scroll_to_match,
             btn_remove: None,
+            drag: None,
             add_deps: None,
         };
 
@@ -775,14 +777,8 @@ impl App {
                         },
                     );
 
-                if res.final_update().is_some() {
-                    res.update_vec(&mut profile.mods);
-                    ctx.needs_save = true;
-                }
-            }
-            if let Some(remove) = ctx.btn_remove {
-                profile.mods.remove(remove);
-                ctx.needs_save = true;
+                // applied to every profile below
+                ctx.drag = res.final_update();
             }
         };
 
@@ -800,6 +796,20 @@ impl App {
         }
 
         self.scroll_to_match = ctx.scroll_to_match;
+
+        // all profiles share one mod list: edits, moves and deletions apply to every profile
+        let mod_data = self.state.mod_data.deref_mut().deref_mut();
+        if ctx.needs_save {
+            mod_data.sync_shared_fields(profile);
+        }
+        if let Some(drag) = ctx.drag {
+            mod_data.move_mod(drag.from, drag.to);
+            ctx.needs_save = true;
+        }
+        if let Some(index) = ctx.btn_remove {
+            mod_data.remove_mod(index);
+            ctx.needs_save = true;
+        }
 
         if ctx.needs_save {
             self.state.mod_data.save().unwrap();

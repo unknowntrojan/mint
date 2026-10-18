@@ -1,4 +1,5 @@
 pub mod config;
+pub mod mod_list;
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -21,7 +22,7 @@ use crate::{gui::SortBy, providers::ProviderError};
 use mint_lib::{DRGInstallation, mod_info::MetaConfig};
 
 /// Mod configuration, holds ModSpecification as well as other metadata
-#[derive(Debug, Clone, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModConfig {
     pub spec: ModSpecification,
     pub required: bool,
@@ -58,7 +59,7 @@ pub struct ModProfile {
     pub mods: Vec<ModOrGroup>,
 }
 
-#[derive(Debug, Clone, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ModOrGroup {
     Group { group_name: String, enabled: bool },
@@ -469,7 +470,8 @@ impl State {
 
         let legacy_mod_profiles_path = dirs.config_dir.join("profiles.json");
         let mod_data_path = dirs.config_dir.join("mod_data.json");
-        let mod_data = read_mod_data_or_default(&mod_data_path, legacy_mod_profiles_path)?;
+        let mut mod_data = read_mod_data_or_default(&mod_data_path, legacy_mod_profiles_path)?;
+        mod_data.normalize_shared_list();
         let mod_data = ConfigWrapper::<VersionAnnotatedModData>::new(mod_data_path, mod_data);
         mod_data.save().unwrap();
 

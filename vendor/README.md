@@ -28,3 +28,4 @@ Everything not listed here is byte-identical to the revision above (minus `.git`
 - `unrealmodding`: num_enum 0.6 -> 0.7, ordered-float 3 -> 4, thiserror 1 -> 2, rustc-hash 1 -> 2.
   Tests and doc examples updated for the `skip_data` argument the `patches` branch added to
   `Asset::new` (they didn't compile upstream).
+- `uasset_utils`: typed-path 0.8 -> 0.12 (same as zip).

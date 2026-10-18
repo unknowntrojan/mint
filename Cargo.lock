@@ -5668,12 +5668,6 @@ dependencies = [
 
 [[package]]
 name = "typed-path"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6069e2cc1d241fd4ff5fa067e8882996fcfce20986d078696e05abccbcf27b43"
-
-[[package]]
-name = "typed-path"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
@@ -5722,7 +5716,7 @@ dependencies = [
  "byteorder",
  "cityhasher",
  "indexmap 2.14.2",
- "typed-path 0.8.0",
+ "typed-path",
  "unicase",
  "unreal_asset",
 ]
@@ -7163,7 +7157,7 @@ dependencies = [
  "indexmap 2.14.2",
  "memchr",
  "nix",
- "typed-path 0.12.3",
+ "typed-path",
 ]
 
 [[package]]

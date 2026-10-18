@@ -1,0 +1,7 @@
+# only server/Dockerfile builds from the repo root; keep its context small
+.git
+.claude
+target
+friendpack
+test_assets
+vendor/unrealmodding/unreal_asset/tests

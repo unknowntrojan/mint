@@ -1,0 +1,15 @@
+services:
+  mint-server:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    image: mint-server
+    restart: unless-stopped
+    volumes:
+      # presets, revision history and publish keys; back this up
+      - ./data:/data
+    ports:
+      # only reachable locally; expose it through the tunnel / reverse proxy
+      - "127.0.0.1:8087:8080"
+    environment:
+      RUST_LOG: info

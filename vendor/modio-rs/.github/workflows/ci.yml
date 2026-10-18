@@ -1,0 +1,95 @@
+name: ci
+
+on: [push, pull_request]
+
+env:
+  minrust: 1.56.0
+
+jobs:
+  lints:
+    name: Rustfmt and clippy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install rust (stable)
+        uses: hecrj/setup-rust-action@v1
+        with:
+          components: clippy, rustfmt
+
+      - name: Run rustfmt
+        run: cargo fmt -- --check
+
+      - name: Run clippy
+        uses: actions-rs/clippy-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          args: --all-features -- -D warnings
+
+  docs:
+    name: Build docs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install rust (nightly)
+        uses: hecrj/setup-rust-action@v1
+        with:
+          rust-version: nightly
+
+      - name: Generate docs
+        run: cargo doc --no-deps --all-features
+
+  build_and_test:
+    name: Build and test
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        rust: [stable, beta, nightly]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install rust (${{ matrix.rust }})
+        uses: hecrj/setup-rust-action@v1
+        with:
+          rust-version: ${{ matrix.rust }}
+
+      - name: Check default features
+        run: cargo check --examples --tests
+
+      - name: Check no default features
+        run: cargo check --examples --tests --no-default-features
+
+      - name: Check `rustls-tls` feature
+        run: cargo check --examples --tests --no-default-features --features rustls-tls
+
+      - name: Check `default-tls` and `rustls-tls` feature
+        run: cargo check --examples --tests --features rustls-tls
+
+      - name: Tests
+        run: cargo test --all-features
+
+      - name: Check minimal versions
+        if: matrix.rust == 'nightly'
+        run: cargo clean; cargo update -Z minimal-versions; cargo c
+
+  MSRV:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install rust (${{ env.minrust }})
+        uses: hecrj/setup-rust-action@v1
+        with:
+          rust-version: ${{ env.minrust }}
+
+      - run: cargo check --all-features

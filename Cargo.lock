@@ -2988,7 +2988,6 @@ dependencies = [
 [[package]]
 name = "modio"
 version = "0.7.1"
-source = "git+https://github.com/trumank/modio-rs.git?branch=dev#d979c0a1bf0fd865bb30feb850079530ec6b84ba"
 dependencies = [
  "bitflags 1.3.2",
  "bytes",
@@ -3546,7 +3545,6 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "oodle_loader"
 version = "0.2.3"
-source = "git+https://github.com/trumank/repak#355b5f62f51959c7cc6dd5a51708646ef483065d"
 dependencies = [
  "hex",
  "libloading 0.9.0",
@@ -3673,7 +3671,6 @@ checksum = "1e91099d4268b0e11973f036e885d652fb0b21fedcf69738c627f94db6a44f42"
 [[package]]
 name = "patternsleuth"
 version = "0.1.0"
-source = "git+https://github.com/trumank/patternsleuth#8bcbd4371989f29eb7dfcb65e645a3bde23daf0d"
 dependencies = [
  "anyhow",
  "futures",
@@ -3695,7 +3692,6 @@ dependencies = [
 [[package]]
 name = "patternsleuth_scanner"
 version = "0.1.0"
-source = "git+https://github.com/trumank/patternsleuth#8bcbd4371989f29eb7dfcb65e645a3bde23daf0d"
 dependencies = [
  "anyhow",
  "memchr",
@@ -4032,7 +4028,6 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 [[package]]
 name = "proxy_dll"
 version = "0.1.0"
-source = "git+https://github.com/trumank/proxy_dll.git#a0c0772634ee751b580f95dd96c460885c8bdf2b"
 dependencies = [
  "msvc_def",
  "proxy_dll_proc",
@@ -4042,7 +4037,6 @@ dependencies = [
 [[package]]
 name = "proxy_dll_proc"
 version = "0.1.0"
-source = "git+https://github.com/trumank/proxy_dll.git#a0c0772634ee751b580f95dd96c460885c8bdf2b"
 dependencies = [
  "msvc_def",
  "proc-macro2",
@@ -4267,7 +4261,6 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 [[package]]
 name = "repak"
 version = "0.2.3"
-source = "git+https://github.com/trumank/repak#355b5f62f51959c7cc6dd5a51708646ef483065d"
 dependencies = [
  "aes",
  "byteorder",
@@ -4343,7 +4336,6 @@ dependencies = [
 [[package]]
 name = "retour"
 version = "0.4.0-alpha.4"
-source = "git+https://github.com/Hpmason/retour-rs#94be4740ec0c624f61a074f439e6351fefc0e697"
 dependencies = [
  "cfg-if",
  "generic-array",
@@ -5570,7 +5562,6 @@ dependencies = [
 [[package]]
 name = "uasset_utils"
 version = "0.1.0"
-source = "git+https://github.com/trumank/uasset_utils#70071ef27913bac269e4ddbcf732aff29d268f2b"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -5631,7 +5622,6 @@ checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 [[package]]
 name = "unreal_asset"
 version = "0.1.16"
-source = "git+https://github.com/trumank/unrealmodding?branch=patches#77475d83712a629a1e89a84eac4a3378ee5e21d4"
 dependencies = [
  "byteorder",
  "unreal_asset_base",
@@ -5646,7 +5636,6 @@ dependencies = [
 [[package]]
 name = "unreal_asset_base"
 version = "0.1.16"
-source = "git+https://github.com/trumank/unrealmodding?branch=patches#77475d83712a629a1e89a84eac4a3378ee5e21d4"
 dependencies = [
  "bitflags 2.13.2",
  "bitvec",
@@ -5666,7 +5655,6 @@ dependencies = [
 [[package]]
 name = "unreal_asset_exports"
 version = "0.1.16"
-source = "git+https://github.com/trumank/unrealmodding?branch=patches#77475d83712a629a1e89a84eac4a3378ee5e21d4"
 dependencies = [
  "bitvec",
  "byteorder",
@@ -5683,7 +5671,6 @@ dependencies = [
 [[package]]
 name = "unreal_asset_kismet"
 version = "0.1.16"
-source = "git+https://github.com/trumank/unrealmodding?branch=patches#77475d83712a629a1e89a84eac4a3378ee5e21d4"
 dependencies = [
  "byteorder",
  "enum_dispatch",
@@ -5696,7 +5683,6 @@ dependencies = [
 [[package]]
 name = "unreal_asset_proc_macro"
 version = "0.1.16"
-source = "git+https://github.com/trumank/unrealmodding?branch=patches#77475d83712a629a1e89a84eac4a3378ee5e21d4"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5706,7 +5692,6 @@ dependencies = [
 [[package]]
 name = "unreal_asset_properties"
 version = "0.1.16"
-source = "git+https://github.com/trumank/unrealmodding?branch=patches#77475d83712a629a1e89a84eac4a3378ee5e21d4"
 dependencies = [
  "bitvec",
  "byteorder",
@@ -5721,7 +5706,6 @@ dependencies = [
 [[package]]
 name = "unreal_asset_registry"
 version = "0.1.16"
-source = "git+https://github.com/trumank/unrealmodding?branch=patches#77475d83712a629a1e89a84eac4a3378ee5e21d4"
 dependencies = [
  "bitvec",
  "byteorder",
@@ -5736,7 +5720,6 @@ dependencies = [
 [[package]]
 name = "unreal_helpers"
 version = "0.1.16"
-source = "git+https://github.com/trumank/unrealmodding?branch=patches#77475d83712a629a1e89a84eac4a3378ee5e21d4"
 dependencies = [
  "bitvec",
  "byteorder",

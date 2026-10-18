@@ -1,4 +1,6 @@
 [workspace]
+# vendor/ holds third-party repos with their own workspaces
+exclude = ["vendor"]
 members = [
   "mint_lib",
   "hook",
@@ -14,9 +16,9 @@ edition = "2024"
 
 [workspace.dependencies]
 anyhow = { version = "1.0.99", features = ["backtrace"] }
-patternsleuth = { git = "https://github.com/trumank/patternsleuth" }
+patternsleuth = { path = "vendor/patternsleuth/patternsleuth" }
 steamlocate = "2.0.1"
-repak = { git = "https://github.com/trumank/repak" }
+repak = { path = "vendor/repak/repak" }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.143"
 itertools = "0.15.0"
@@ -57,7 +59,7 @@ image = { version = "0.25.6", default-features = false, features = ["png"] }
 indexmap = { version = "2.11.0", features = ["serde"] }
 inventory = "0.3.21"
 mint_lib = { path = "mint_lib" }
-modio = { git = "https://github.com/trumank/modio-rs.git", branch = "dev", default-features = false, features = ["rustls-tls"] }
+modio = { path = "vendor/modio-rs", default-features = false, features = ["rustls-tls"] }
 obake = { version = "1.0.5", features = ["serde"] }
 opener = "0.9.0"
 path-slash = "0.2.1"
@@ -79,8 +81,8 @@ thiserror = "2.0.16"
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 typetag = "0.2.20"
-uasset_utils = { git = "https://github.com/trumank/uasset_utils" }
-unreal_asset = { git = "https://github.com/trumank/unrealmodding", branch = "patches" }
+uasset_utils = { path = "vendor/uasset_utils/uasset_utils" }
+unreal_asset = { path = "vendor/unrealmodding/unreal_asset" }
 url = "2.5.7"
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 repak = { workspace = true, features = ["oodle"] }

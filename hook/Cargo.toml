@@ -19,7 +19,7 @@ postcard.workspace = true
 fs-err.workspace = true
 tracing.workspace = true
 patternsleuth = { workspace = true, features = ["process-internal", "image-pe"] }
-retour = { git = "https://github.com/Hpmason/retour-rs", features = ["static-detour"] }
+retour = { path = "../vendor/retour-rs", features = ["static-detour"] }
 hook_resolvers = { path = "../hook_resolvers" }
 windows = { version = "0.61.3", features = [
   "Win32_Foundation",
@@ -32,4 +32,4 @@ mint_lib = { path = "../mint_lib", default-features = false }
 bitflags = "2.9.3"
 widestring = "1.2.0"
 tracing-appender = "0.2.3"
-proxy_dll = { git = "https://github.com/trumank/proxy_dll.git" }
+proxy_dll = { path = "../vendor/proxy_dll/proxy_dll" }

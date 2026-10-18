@@ -1,0 +1,14 @@
+[package]
+name = "unreal_pak_cli"
+version.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+edition = "2021"
+
+[dependencies]
+unreal_pak.workspace = true
+
+clap = { version = "4.1.13", features = ["derive"] }
+path-absolutize = "3.0.14"
+walkdir = "2.3.3"

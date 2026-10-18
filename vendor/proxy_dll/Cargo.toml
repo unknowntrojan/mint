@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "proxy_dll",
+    "proxy_dll_proc",
+    "chain_loader",
+]
+
+[workspace.package]
+repository = "https://github.com/trumank/proxy_dll"
+authors = ["trumank"]
+license = "MIT OR Apache-2.0"
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+msvc_def = "0.1.0"

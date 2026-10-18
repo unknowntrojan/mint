@@ -28,7 +28,7 @@ tracing = { version = "0.1.41", features = ["attributes"] }
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.19", features = ["fmt", "env-filter", "std", "registry"] }
 tokio = "1.47.1"
-reqwest = { version = "0.11.27", default-features = false, features = ["blocking", "rustls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 snafu = "0.9.2"
 
 [package]
@@ -55,6 +55,7 @@ egui = "0.36.2"
 egui_commonmark = "0.25.0"
 futures = "0.3.31"
 hex = "0.4.3"
+http = "1"
 image = { version = "0.25.6", default-features = false, features = ["png"] }
 indexmap = { version = "2.11.0", features = ["serde"] }
 inventory = "0.3.21"
@@ -66,7 +67,7 @@ path-slash = "0.2.1"
 rayon = "1.11.0"
 regex = "1.11.2"
 reqwest.workspace = true
-reqwest-middleware = "0.2.5"
+reqwest-middleware = "0.4"
 rfd = "0.17.2"
 rust-ini = "0.21.1"
 self-replace = "1.5.0"
@@ -75,7 +76,6 @@ serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10.9"
 steamlocate.workspace = true
-task-local-extensions = "0.1.4"
 tempfile = "3.21.0"
 thiserror = "2.0.16"
 tokio = { workspace = true, features = ["full"] }

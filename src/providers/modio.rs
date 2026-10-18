@@ -7,10 +7,10 @@ use mockall::{automock, predicate::*};
 
 use ::modio;
 
+use ::http::Extensions;
 use reqwest::{Request, Response};
 use reqwest_middleware::{Middleware, Next};
 use serde::{Deserialize, Serialize};
-use task_local_extensions::Extensions;
 use tracing::*;
 
 use crate::providers::*;

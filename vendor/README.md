@@ -22,3 +22,6 @@ Everything not listed here is byte-identical to the revision above (minus `.git`
 - `repak/oodle_loader`: never downloads the Oodle library (it must sit next to the executable;
   the friendpack installers put it there). Drops `ureq`, `sha2`, `hex`; `libloading` 0.9 -> 0.8
   to share the copy eframe uses.
+- `modio-rs`: reqwest 0.11 -> 0.12, reqwest-middleware 0.2 -> 0.4 (+ `multipart`), http 0.2 -> 1,
+  bitflags 1 -> 2 (explicit derives, `.bits` -> `.bits()`), serde_with 2 -> 3. Gets mint off
+  hyper 0.14 / rustls 0.21, which no longer receive updates.

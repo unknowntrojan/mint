@@ -115,7 +115,7 @@ bitflags! {
         const GUIDES_NEWS       = 2;
         /// "Subscribe to install" button disabled.
         const DISABLE_SUBSCRIBE = 4;
-        const ALL = Self::DISCUSSIONS.bits | Self::GUIDES_NEWS.bits | Self::DISABLE_SUBSCRIBE.bits;
+        const ALL = Self::DISCUSSIONS.bits() | Self::GUIDES_NEWS.bits() | Self::DISABLE_SUBSCRIBE.bits();
     }
 
     /// Revenue capabilities mods can enable.
@@ -128,7 +128,7 @@ bitflags! {
         const TRADE     = 4;
         /// Allow mods to control supply and scarcity.
         const SCARCITY  = 8;
-        const ALL = Self::SELL.bits | Self::DONATIONS.bits | Self::TRADE.bits | Self::SCARCITY.bits;
+        const ALL = Self::SELL.bits() | Self::DONATIONS.bits() | Self::TRADE.bits() | Self::SCARCITY.bits();
     }
 
     /// Level of API access allowed by a game.
@@ -137,7 +137,7 @@ bitflags! {
         const ALLOW_THIRD_PARTY     = 1;
         /// Allow mods to be downloaded directly.
         const ALLOW_DIRECT_DOWNLOAD = 2;
-        const ALL = Self::ALLOW_THIRD_PARTY.bits | Self::ALLOW_DIRECT_DOWNLOAD.bits;
+        const ALL = Self::ALLOW_THIRD_PARTY.bits() | Self::ALLOW_DIRECT_DOWNLOAD.bits();
     }
 }
 

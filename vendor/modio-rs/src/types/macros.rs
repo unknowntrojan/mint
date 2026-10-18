@@ -13,6 +13,7 @@ macro_rules! bitflags {
     ) => {
         bitflags::bitflags! {
             $(#[$outer])*
+            #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
             $vis struct $BitFlags: $T {
                 $(
                     $(#[$inner $($args)*])*
@@ -31,7 +32,7 @@ macro_rules! bitflags {
     (__impl_display $BitFlags:ident) => {
         impl ::std::fmt::Display for $BitFlags {
             fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-                self.bits.fmt(f)
+                self.bits().fmt(f)
             }
         }
     };

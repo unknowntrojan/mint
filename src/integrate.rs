@@ -162,12 +162,12 @@ pub enum IntegrationError {
     RepakError { source: repak::Error },
     #[snafu(transparent)]
     UnrealAssetError { source: unreal_asset::Error },
-    #[snafu(display("mod {:?}: I/O error encountered during its processing", mod_info.name))]
+    #[snafu(display("mod {:?}: I/O error encountered during its processing: {source}", mod_info.name))]
     CtxtIoError {
         source: std::io::Error,
         mod_info: Box<ModInfo>,
     },
-    #[snafu(display("mod {:?}: repak error encountered during its processing", mod_info.name))]
+    #[snafu(display("mod {:?}: repak error encountered during its processing: {source}", mod_info.name))]
     CtxtRepakError {
         source: repak::Error,
         mod_info: Box<ModInfo>,

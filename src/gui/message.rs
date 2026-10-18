@@ -638,7 +638,8 @@ async fn self_update_async(
 
     let response = client
         .get(format!(
-            "https://github.com/trumank/mint/releases/latest/download/{asset_name}"
+            "https://github.com/{}/releases/latest/download/{asset_name}",
+            mint_lib::update::GITHUB_REPO
         ))
         .send()
         .await

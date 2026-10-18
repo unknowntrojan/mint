@@ -1,8 +1,8 @@
 use crate::error::GenericError;
 use crate::error::ResultExt;
 
-pub const GITHUB_RELEASE_URL: &str = "https://api.github.com/repos/trumank/mint/releases/latest";
-pub const GITHUB_REQ_USER_AGENT: &str = "trumank/mint";
+/// GitHub repo that update checks and self-updates come from.
+pub const GITHUB_REPO: &str = "unknowntrojan/mint";
 
 #[derive(Debug, serde::Deserialize)]
 pub struct GitHubRelease {
@@ -13,10 +13,12 @@ pub struct GitHubRelease {
 
 pub async fn get_latest_release() -> Result<GitHubRelease, GenericError> {
     reqwest::Client::builder()
-        .user_agent(GITHUB_REQ_USER_AGENT)
+        .user_agent(GITHUB_REPO)
         .build()
         .generic("failed to construct reqwest client".to_string())?
-        .get(GITHUB_RELEASE_URL)
+        .get(format!(
+            "https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+        ))
         .send()
         .await
         .generic("check self update request failed".to_string())?

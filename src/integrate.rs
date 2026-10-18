@@ -296,13 +296,17 @@ pub fn integrate<P: AsRef<Path>>(
         }?;
     }
 
+    // Build the bundle next to the real one and only swap it in once complete, so a failed
+    // integration leaves the previous mods_P.pak intact. The game ignores non-.pak files.
+    let path_mod_pak_tmp = path_mod_pak.with_extension("pak.tmp");
+    let tmp_guard = RemoveOnDrop(Some(path_mod_pak_tmp.clone()));
     let mut bundle = ModBundleWriter::new(
         BufWriter::new(
             fs::OpenOptions::new()
                 .write(true)
                 .create(true)
                 .truncate(true)
-                .open(&path_mod_pak)?,
+                .open(&path_mod_pak_tmp)?,
         ),
         &fsd_pak.files(),
         config.compress_pak,
@@ -494,7 +498,16 @@ pub fn integrate<P: AsRef<Path>>(
         .map_err(|e| IntegrationError::GenericError { msg: e.to_string() })?;
     bundle.write_file(&buf, ar_path)?;
 
-    bundle.finish()?;
+    let file = bundle
+        .finish()?
+        .into_inner()
+        .map_err(|e| IntegrationError::IoError {
+            source: e.into_error(),
+        })?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(&path_mod_pak_tmp, &path_mod_pak)?;
+    tmp_guard.disarm();
 
     info!(
         "{} mods installed to {}",
@@ -632,9 +645,23 @@ impl<W: Write + Seek> ModBundleWriter<W> {
         Ok(())
     }
 
-    fn finish(self) -> Result<(), IntegrationError> {
-        self.pak_writer.write_index()?;
-        Ok(())
+    fn finish(self) -> Result<W, IntegrationError> {
+        Ok(self.pak_writer.write_index()?)
+    }
+}
+
+/// Deletes the file when dropped, unless disarmed.
+struct RemoveOnDrop(Option<PathBuf>);
+impl RemoveOnDrop {
+    fn disarm(mut self) {
+        self.0 = None;
+    }
+}
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            std::fs::remove_file(path).ok();
+        }
     }
 }
 

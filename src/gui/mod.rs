@@ -271,6 +271,8 @@ impl App {
             scroll_to_match: bool,
             btn_remove: Option<usize>,
             drag: Option<egui_dnd::DragUpdate>,
+            /// Shift+click on a toggle: (row, new state) for every profile
+            toggle_everywhere: Option<(usize, bool)>,
             add_deps: Option<Vec<ModSpecification>>,
         }
         let mut ctx = Ctx {
@@ -278,6 +280,7 @@ impl App {
             scroll_to_match: self.scroll_to_match,
             btn_remove: None,
             drag: None,
+            toggle_everywhere: None,
             add_deps: None,
         };
 
@@ -437,7 +440,7 @@ impl App {
 
             let mut ui_mod = |ctx: &mut Ctx,
                               ui: &mut Ui,
-                              _group: Option<&str>,
+                              group: Option<&str>,
                               row_index: usize,
                               mc: &mut ModConfig| {
                 if !mc.enabled {
@@ -448,10 +451,14 @@ impl App {
 
                 if ui
                     .add(toggle_switch(&mut mc.enabled))
-                    .on_hover_text_at_pointer("Enabled?")
+                    .on_hover_text_at_pointer("Enabled?\nShift+click: set in all presets")
                     .changed()
                 {
                     ctx.needs_save = true;
+                    // mods inside a group are shared by all profiles already
+                    if group.is_none() && ui.input(|i| i.modifiers.shift) {
+                        ctx.toggle_everywhere = Some((row_index, mc.enabled));
+                    }
                 }
 
                 /*
@@ -686,49 +693,54 @@ impl App {
                 }
             };
 
-            let mut ui_item =
-                |ctx: &mut Ctx, ui: &mut Ui, mc: &mut ModOrGroup, row_index: usize| {
-                    ui.scope(|ui| {
-                        ui.visuals_mut().widgets.hovered.weak_bg_fill = colors::DARK_RED;
-                        ui.visuals_mut().widgets.active.weak_bg_fill = colors::DARKER_RED;
-                        if ui
-                            .add(Button::new(" 🗑 "))
-                            .on_hover_text_at_pointer("Delete mod")
-                            .clicked()
-                        {
-                            ctx.btn_remove = Some(row_index);
-                        };
-                    });
+            let mut ui_item = |ctx: &mut Ctx,
+                               ui: &mut Ui,
+                               mc: &mut ModOrGroup,
+                               row_index: usize| {
+                ui.scope(|ui| {
+                    ui.visuals_mut().widgets.hovered.weak_bg_fill = colors::DARK_RED;
+                    ui.visuals_mut().widgets.active.weak_bg_fill = colors::DARKER_RED;
+                    if ui
+                        .add(Button::new(" 🗑 "))
+                        .on_hover_text_at_pointer("Delete mod")
+                        .clicked()
+                    {
+                        ctx.btn_remove = Some(row_index);
+                    };
+                });
 
-                    match mc {
-                        ModOrGroup::Individual(mc) => {
-                            ui_mod(ctx, ui, None, row_index, mc);
-                        }
-                        ModOrGroup::Group {
-                            group_name,
-                            enabled,
-                        } => {
-                            if ui
-                                .add(toggle_switch(enabled))
-                                .on_hover_text_at_pointer("Enabled?")
-                                .changed()
-                            {
-                                ctx.needs_save = true;
-                            }
-                            ui.collapsing(group_name.as_str(), |ui| {
-                                for (index, m) in groups
-                                    .get_mut(group_name)
-                                    .unwrap()
-                                    .mods
-                                    .iter_mut()
-                                    .enumerate()
-                                {
-                                    ui.horizontal(|ui| ui_mod(ctx, ui, Some(group_name), index, m));
-                                }
-                            });
-                        }
+                match mc {
+                    ModOrGroup::Individual(mc) => {
+                        ui_mod(ctx, ui, None, row_index, mc);
                     }
-                };
+                    ModOrGroup::Group {
+                        group_name,
+                        enabled,
+                    } => {
+                        if ui
+                            .add(toggle_switch(enabled))
+                            .on_hover_text_at_pointer("Enabled?\nShift+click: set in all presets")
+                            .changed()
+                        {
+                            ctx.needs_save = true;
+                            if ui.input(|i| i.modifiers.shift) {
+                                ctx.toggle_everywhere = Some((row_index, *enabled));
+                            }
+                        }
+                        ui.collapsing(group_name.as_str(), |ui| {
+                            for (index, m) in groups
+                                .get_mut(group_name)
+                                .unwrap()
+                                .mods
+                                .iter_mut()
+                                .enumerate()
+                            {
+                                ui.horizontal(|ui| ui_mod(ctx, ui, Some(group_name), index, m));
+                            }
+                        });
+                    }
+                }
+            };
 
             if let Some(sorting_config) = sorting_config {
                 let comp = sort_mods(sorting_config);
@@ -805,6 +817,9 @@ impl App {
         let mod_data = self.state.mod_data.deref_mut().deref_mut();
         if ctx.needs_save {
             mod_data.sync_shared_fields(profile);
+        }
+        if let Some((index, enabled)) = ctx.toggle_everywhere {
+            mod_data.set_enabled_everywhere(index, enabled);
         }
         if let Some(drag) = ctx.drag {
             mod_data.move_mod(drag.from, drag.to);

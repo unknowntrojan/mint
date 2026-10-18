@@ -221,6 +221,17 @@ impl ModData {
         self.active_profile = name.to_string();
     }
 
+    /// Enables or disables an entry in every profile.
+    pub fn set_enabled_everywhere(&mut self, index: usize, enabled: bool) {
+        for profile in self.profiles.values_mut() {
+            match profile.mods.get_mut(index) {
+                Some(ModOrGroup::Individual(mc)) => mc.enabled = enabled,
+                Some(ModOrGroup::Group { enabled: e, .. }) => *e = enabled,
+                None => {}
+            }
+        }
+    }
+
     /// Copies version and load priority of every entry from `profile` to all other profiles.
     pub fn sync_shared_fields(&mut self, profile: &str) {
         let Some(source) = self.profiles.get(profile).map(|p| p.mods.clone()) else {
@@ -418,6 +429,20 @@ mod tests {
         d.restore_mod(deleted);
         assert_eq!(urls(&d, "a"), ["x", "y"]);
         assert_eq!(enabled(&d, "a"), [false, true]);
+    }
+
+    #[test]
+    fn set_enabled_everywhere_touches_only_that_entry() {
+        let mut d = data(
+            "a",
+            &[
+                ("a", vec![m("x", true), m("y", false)]),
+                ("b", vec![m("x", false), m("y", true)]),
+            ],
+        );
+        d.set_enabled_everywhere(0, true);
+        assert_eq!(enabled(&d, "a"), [true, false]);
+        assert_eq!(enabled(&d, "b"), [true, true]);
     }
 
     #[test]

@@ -1,3 +1,5 @@
+#![cfg(windows)]
+
 mod hooks;
 mod ue;
 

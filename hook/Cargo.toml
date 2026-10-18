@@ -10,7 +10,9 @@ edition.workspace = true
 path = "src/lib.rs"
 crate-type = ["cdylib"]
 
-[dependencies]
+# The hook is a Windows DLL (also loaded under Proton); on other hosts the crate is empty so
+# `cargo test --workspace` works there.
+[target.'cfg(windows)'.dependencies]
 anyhow.workspace = true
 repak.workspace = true
 serde.workspace = true

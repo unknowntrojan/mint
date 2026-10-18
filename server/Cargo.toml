@@ -1,0 +1,25 @@
+[package]
+name = "mint_server"
+description = "Serves and accepts published mint mod presets"
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio", "tracing"] }
+getrandom = "0.4.3"
+hex = "0.4.3"
+remote_preset = { path = "../remote_preset" }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10.9"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "signal"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile = "3.21.0"
+tower = { version = "0.5.3", features = ["util"] }

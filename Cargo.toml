@@ -6,7 +6,10 @@ members = [
   "hook",
   "hook_resolvers",
   "remote_preset",
+  "server",
 ]
+# `cargo build` builds mint as before; the server is built with `-p mint_server`
+default-members = [".", "mint_lib", "hook", "hook_resolvers", "remote_preset"]
 
 [workspace.package]
 repository = "https://github.com/trumank/mint"

@@ -28,7 +28,7 @@ fn user_defined_struct() -> Result<(), Error> {
             Cursor::new(asset_data),
             Some(Cursor::new(bulk_data)),
             EngineVersion::VER_UE4_26,
-            None,
+            None, false,
         )?;
         shared::verify_binary_equality(asset_data, Some(bulk_data), &mut parsed)?;
         shared::verify_all_exports_parsed(&parsed);

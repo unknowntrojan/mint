@@ -15,7 +15,7 @@ unreal_helpers.workspace = true
 unreal_helpers.features = ["bitvec", "guid", "path", "read_write"]
 
 # containers/indexed_map
-rustc-hash = "1.1.0"
+rustc-hash = "2"
 slab = "0.4.8"
 
 # compression

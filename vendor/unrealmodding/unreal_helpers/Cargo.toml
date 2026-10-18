@@ -23,7 +23,7 @@ byteorder.optional = true
 serde.workspace = true
 serde.optional = true
 
-thiserror = "1.0.40"
+thiserror = "2"
 
 [features]
 bitvec = ["dep:bitvec"]

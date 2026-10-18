@@ -31,7 +31,7 @@ fn custom_serialization_structs_in_map() -> Result<(), Error> {
         Cursor::new(ASSET_FILE),
         Some(Cursor::new(ASSET_BULK_FILE)),
         EngineVersion::VER_UE4_25,
-        None,
+        None, false,
     )?;
 
     shared::verify_binary_equality(ASSET_FILE, Some(ASSET_BULK_FILE), &mut asset)?;

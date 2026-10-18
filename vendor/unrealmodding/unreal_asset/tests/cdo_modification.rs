@@ -30,7 +30,7 @@ fn cdo_modification() -> Result<(), Error> {
         Cursor::new(TEST_ASSET),
         None,
         EngineVersion::VER_UE4_23,
-        None,
+        None, false,
     )?;
 
     shared::verify_binary_equality(TEST_ASSET, None, &mut asset)?;

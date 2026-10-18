@@ -28,7 +28,7 @@ fn data_tables() -> Result<(), Error> {
         Cursor::new(TEST_ASSET),
         None,
         EngineVersion::VER_UE4_18,
-        None,
+        None, false,
     )?;
 
     shared::verify_binary_equality(TEST_ASSET, None, &mut asset)?;
@@ -64,7 +64,7 @@ fn data_tables() -> Result<(), Error> {
         Cursor::new(modified.as_slice()),
         None,
         EngineVersion::VER_UE4_18,
-        None,
+        None, false,
     )?;
 
     shared::verify_binary_equality(&modified, None, &mut asset)?;

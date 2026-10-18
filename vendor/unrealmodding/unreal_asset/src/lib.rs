@@ -16,7 +16,7 @@
 //! };
 //!
 //! let mut file = File::open("asset.uasset").unwrap();
-//! let mut asset = Asset::new(file, None, EngineVersion::VER_UE4_23, None).unwrap();
+//! let mut asset = Asset::new(file, None, EngineVersion::VER_UE4_23, None, false).unwrap();
 //!
 //! println!("{:#?}", asset);
 //! ```
@@ -33,7 +33,7 @@
 //!
 //! let mut file = File::open("asset.uasset").unwrap();
 //! let mut bulk_file = File::open("asset.uexp").unwrap();
-//! let mut asset = Asset::new(file, Some(bulk_file), EngineVersion::VER_UE4_23, None).unwrap();
+//! let mut asset = Asset::new(file, Some(bulk_file), EngineVersion::VER_UE4_23, None, false).unwrap();
 //!
 //! println!("{:#?}", asset);
 //! ```

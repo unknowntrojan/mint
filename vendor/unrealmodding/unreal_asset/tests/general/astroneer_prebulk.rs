@@ -30,7 +30,7 @@ fn astroneer_prebulk() -> Result<(), Error> {
             Cursor::new(test_asset),
             None,
             EngineVersion::VER_UE4_23,
-            None,
+            None, false,
         )?;
         shared::verify_binary_equality(test_asset, None, &mut asset)?;
         assert!(shared::verify_all_exports_parsed(&asset));

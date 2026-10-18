@@ -34,7 +34,7 @@ fn bloodstained() -> Result<(), Error> {
             Cursor::new(test_asset),
             None,
             EngineVersion::VER_UE4_18,
-            None,
+            None, false,
         )?;
         shared::verify_binary_equality(test_asset, None, &mut asset)?;
         assert!(shared::verify_all_exports_parsed(&asset));

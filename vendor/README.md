@@ -25,3 +25,6 @@ Everything not listed here is byte-identical to the revision above (minus `.git`
 - `modio-rs`: reqwest 0.11 -> 0.12, reqwest-middleware 0.2 -> 0.4 (+ `multipart`), http 0.2 -> 1,
   bitflags 1 -> 2 (explicit derives, `.bits` -> `.bits()`), serde_with 2 -> 3. Gets mint off
   hyper 0.14 / rustls 0.21, which no longer receive updates.
+- `unrealmodding`: num_enum 0.6 -> 0.7, ordered-float 3 -> 4, thiserror 1 -> 2, rustc-hash 1 -> 2.
+  Tests and doc examples updated for the `skip_data` argument the `patches` branch added to
+  `Asset::new` (they didn't compile upstream).

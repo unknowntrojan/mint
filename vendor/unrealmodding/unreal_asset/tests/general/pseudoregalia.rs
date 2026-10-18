@@ -33,7 +33,7 @@ fn pseudoregalia() -> Result<(), Error> {
             Cursor::new(test_asset),
             Some(Cursor::new(asset_bulk)),
             EngineVersion::VER_UE5_1,
-            None,
+            None, false,
         )?;
 
         shared::verify_binary_equality(test_asset, Some(asset_bulk), &mut asset)?;

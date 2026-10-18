@@ -37,7 +37,7 @@ fn ac7() -> Result<(), Error> {
             Cursor::new(decrypted_data.as_slice()),
             Some(Cursor::new(decrypted_bulk.as_slice())),
             EngineVersion::VER_UE4_18,
-            None,
+            None, false,
         )?;
 
         shared::verify_binary_equality(&decrypted_data, Some(&decrypted_bulk), &mut parsed)?;

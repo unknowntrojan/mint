@@ -39,8 +39,9 @@ use crate::Dirs;
 use crate::gui::find_string::searchable_text;
 use crate::mod_lints::{LintId, LintReport, SplitAssetPair};
 use crate::providers::ProviderError;
-use crate::state::SortingConfig;
+use crate::state::config::ConfigWrapper;
 use crate::state::mod_list::DeletedMod;
+use crate::state::{DEFAULT_PRESET_SERVER, SortingConfig, VersionAnnotatedConfig};
 use crate::{
     MintError,
     integrate::uninstall,
@@ -1135,6 +1136,44 @@ impl App {
                         }
                         ui.end_row();
 
+                        ui.label("Preset server:")
+                            .on_hover_cursor(egui::CursorIcon::Help)
+                            .on_hover_text("Where [Remote] presets come from and get published to.\nEmpty means the default.");
+                        ui.horizontal(|ui| {
+                            let res = ui.add(
+                                egui::TextEdit::singleline(&mut window.preset_server)
+                                    .hint_text(DEFAULT_PRESET_SERVER)
+                                    .desired_width(200.0),
+                            );
+                            if res.changed() {
+                                window.preset_server_err = None;
+                            }
+                            if res.lost_focus() {
+                                window.apply_remote(&mut self.state.config);
+                            }
+                            if let Some(error) = &window.preset_server_err {
+                                ui.colored_label(ui.visuals().error_fg_color, error);
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("Publish key:")
+                            .on_hover_cursor(egui::CursorIcon::Help)
+                            .on_hover_text("Only needed to publish presets.\nfriendpack leaves it out of the mods pack.");
+                        ui.horizontal(|ui| {
+                            let res = ui.add(
+                                egui::TextEdit::singleline(&mut window.publish_key)
+                                    .password(!window.show_publish_key)
+                                    .hint_text("none")
+                                    .desired_width(200.0),
+                            );
+                            if res.lost_focus() {
+                                window.apply_remote(&mut self.state.config);
+                            }
+                            ui.toggle_value(&mut window.show_publish_key, "show");
+                        });
+                        ui.end_row();
+
                         ui.label("Mod providers:");
                         ui.end_row();
 
@@ -1161,6 +1200,9 @@ impl App {
                     });
 
                 });
+            if try_save || !open {
+                window.apply_remote(&mut self.state.config);
+            }
             if try_save {
                 if let Err(e) = is_drg_pak(&window.drg_pak_path) {
                     window.drg_pak_path_err = Some(e.to_string());
@@ -1710,6 +1752,10 @@ impl WindowProviderParameters {
 struct WindowSettings {
     drg_pak_path: String,
     drg_pak_path_err: Option<String>,
+    preset_server: String,
+    preset_server_err: Option<String>,
+    publish_key: String,
+    show_publish_key: bool,
 }
 
 impl WindowSettings {
@@ -1723,6 +1769,38 @@ impl WindowSettings {
         Self {
             drg_pak_path: path,
             drg_pak_path_err: None,
+            preset_server: state.config.preset_server.clone().unwrap_or_default(),
+            preset_server_err: None,
+            publish_key: state.config.publish_key.clone().unwrap_or_default(),
+            show_publish_key: false,
+        }
+    }
+
+    /// Saves the preset server and publish key if they changed. An invalid server URL is
+    /// reported and left unsaved.
+    fn apply_remote(&mut self, config: &mut ConfigWrapper<VersionAnnotatedConfig>) {
+        let mut changed = false;
+
+        let server = self.preset_server.trim().trim_end_matches('/');
+        if server.is_empty() || server == DEFAULT_PRESET_SERVER {
+            changed |= config.preset_server.take().is_some();
+        } else if !(server.starts_with("https://") || server.starts_with("http://")) {
+            self.preset_server_err = Some("must start with https://".into());
+        } else if config.preset_server.as_deref() != Some(server) {
+            config.preset_server = Some(server.to_string());
+            changed = true;
+        }
+
+        let key = Some(self.publish_key.trim())
+            .filter(|k| !k.is_empty())
+            .map(str::to_string);
+        if config.publish_key != key {
+            config.publish_key = key;
+            changed = true;
+        }
+
+        if changed {
+            config.save().unwrap();
         }
     }
 }

@@ -342,6 +342,23 @@ pub struct Config {
     pub sorting_config: Option<SortingConfig>,
     #[serde(default)]
     pub compress_pak: bool,
+    /// Overrides [`DEFAULT_PRESET_SERVER`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset_server: Option<String>,
+    /// Lets this install publish presets. friendpack leaves it out of the mods pack.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish_key: Option<String>,
+}
+
+/// Where `[Remote]` presets come from unless the config says otherwise.
+pub const DEFAULT_PRESET_SERVER: &str = "https://mint.kohlroulade.lgbt";
+
+impl Config!["0.0.0"] {
+    pub fn preset_server(&self) -> &str {
+        self.preset_server
+            .as_deref()
+            .unwrap_or(DEFAULT_PRESET_SERVER)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -417,6 +434,8 @@ impl Default for Config!["0.0.0"] {
             gui_theme: None,
             sorting_config: None,
             compress_pak: false,
+            preset_server: None,
+            publish_key: None,
         }
     }
 }
@@ -723,5 +742,27 @@ mod mod_data_tests {
             panic!("expected versioned 0.0.0 config");
         };
         assert!(!cfg.compress_pak);
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::{DEFAULT_PRESET_SERVER, VersionAnnotatedConfig};
+
+    #[test]
+    fn remote_fields_are_optional_and_omitted_when_unset() {
+        let old = r#"{"version":"0.0.0","provider_parameters":{},"drg_pak_path":null,"gui_theme":null,"sorting_config":null}"#;
+        let mut cfg: VersionAnnotatedConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(cfg.preset_server(), DEFAULT_PRESET_SERVER);
+        assert_eq!(cfg.publish_key, None);
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(!json.contains("publish_key") && !json.contains("preset_server"));
+
+        cfg.preset_server = Some("http://localhost:8080".into());
+        cfg.publish_key = Some("k".into());
+        let back: VersionAnnotatedConfig =
+            serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(back.preset_server(), "http://localhost:8080");
+        assert_eq!(back.publish_key.as_deref(), Some("k"));
     }
 }

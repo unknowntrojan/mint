@@ -84,7 +84,7 @@ typetag = "0.2.20"
 uasset_utils = { path = "vendor/uasset_utils/uasset_utils" }
 unreal_asset = { path = "vendor/unrealmodding/unreal_asset" }
 url = "2.5.7"
-zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 repak = { workspace = true, features = ["oodle"] }
 include_dir = "0.7.4"
 postcard.workspace = true

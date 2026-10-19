@@ -3117,6 +3117,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mint_release"
+version = "0.2.10"
+dependencies = [
+ "anyhow",
+ "ed25519-dalek",
+ "getrandom 0.4.3",
+ "hex",
+ "remote_preset",
+ "reqwest",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "mint_server"
 version = "0.2.10"
 dependencies = [

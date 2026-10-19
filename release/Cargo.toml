@@ -1,0 +1,18 @@
+[package]
+name = "mint_release"
+description = "Signs and publishes mint releases to a mint server"
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+ed25519-dalek = { version = "2.2.0", default-features = false }
+getrandom = "0.4.3"
+hex = "0.4.3"
+remote_preset = { path = "../remote_preset" }
+reqwest.workspace = true
+serde_json.workspace = true
+sha2 = "0.10.9"

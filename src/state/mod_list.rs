@@ -490,24 +490,6 @@ impl ModData {
         rows.insert(at, Row::Entry(i));
         self.arrange(&rows);
     }
-
-    /// Enables or disables every entry of section `s` in `profile`, or in every profile.
-    pub fn set_section_enabled(&mut self, s: usize, enabled: bool, profile: Option<&str>) {
-        let Some(range) = self.section_ranges().get(s).cloned() else {
-            return;
-        };
-        for (name, p) in self.profiles.iter_mut() {
-            if profile.is_some_and(|wanted| wanted != name) {
-                continue;
-            }
-            for entry in p.mods.get_mut(range.clone()).into_iter().flatten() {
-                match entry {
-                    ModOrGroup::Individual(mc) => mc.enabled = enabled,
-                    ModOrGroup::Group { enabled: e, .. } => *e = enabled,
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -818,13 +800,6 @@ mod tests {
         d.remove_section(1);
         assert_eq!(view(&d), sv(&[("S1", &["y"]), ("S2", &["z"])]));
         assert_shared(&d);
-
-        d.set_section_enabled(1, true, Some("b"));
-        assert_eq!(enabled(&d, "b"), [false, true, true]);
-        assert_eq!(enabled(&d, "a"), [true, false, true]);
-        d.set_section_enabled(0, false, None);
-        assert_eq!(enabled(&d, "a"), [true, false, true]);
-        assert_eq!(enabled(&d, "b"), [false, false, true]);
     }
 
     #[test]

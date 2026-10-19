@@ -524,8 +524,6 @@ impl App {
             drag: Option<Vec<Row>>,
             /// Shift+click on a toggle: (row, new state) for every profile
             toggle_everywhere: Option<(usize, bool)>,
-            /// (section, new state, in every profile)
-            section_enabled: Option<(usize, bool, bool)>,
             section_op: Option<SectionOp>,
             add_deps: Option<Vec<ModSpecification>>,
         }
@@ -535,7 +533,6 @@ impl App {
             btn_remove: None,
             drag: None,
             toggle_everywhere: None,
-            section_enabled: None,
             section_op: None,
             add_deps: None,
         };
@@ -1119,7 +1116,7 @@ impl App {
                                 .inner_margin(egui::Margin::symmetric(0, 3));
                             frame.show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    // arrow and toggle line up with the mods' drag handle and toggle
+                                    // the arrow lines up with the mods' drag handle
                                     let open = section_open[s];
                                     if ui
                                         .add(
@@ -1132,20 +1129,6 @@ impl App {
                                         sections[s].collapsed = open;
                                         ctx.needs_save = true;
                                     }
-                                    ui.add_visible(false, Button::new(" 🗑 "));
-
-                                    let mut all = total > 0 && on == total;
-                                    if ui
-                                        .add_enabled(total > 0, toggle_switch(&mut all))
-                                        .on_hover_text_at_pointer(
-                                            "Enable or disable the whole section\nShift+click: in all presets",
-                                        )
-                                        .changed()
-                                    {
-                                        let everywhere = ui.input(|i| i.modifiers.shift);
-                                        ctx.section_enabled = Some((s, all, everywhere));
-                                    }
-
                                     match renaming.as_mut().filter(|r| r.index == s) {
                                         Some(rename) => {
                                             let res = ui.add(
@@ -1234,10 +1217,6 @@ impl App {
         }
         if let Some(rows) = ctx.drag {
             mod_data.arrange(&rows);
-            ctx.needs_save = true;
-        }
-        if let Some((s, enabled, everywhere)) = ctx.section_enabled {
-            mod_data.set_section_enabled(s, enabled, (!everywhere).then_some(profile));
             ctx.needs_save = true;
         }
         if let Some(op) = ctx.section_op {

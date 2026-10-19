@@ -150,6 +150,8 @@ pub struct App {
     search_string: String,
     scroll_to_match: bool,
     focus_search: bool,
+    /// select the search text when focusing it (Ctrl+F)
+    select_search: bool,
     settings_window: Option<WindowSettings>,
     modio_texture_handle: Option<egui::TextureHandle>,
     last_action: Option<LastAction>,
@@ -457,6 +459,7 @@ impl App {
             search_string: Default::default(),
             scroll_to_match: false,
             focus_search: false,
+            select_search: false,
             settings_window: None,
             modio_texture_handle: None,
             last_action: None,
@@ -2545,6 +2548,13 @@ impl eframe::App for App {
                         .unwrap_or(false)
                 });
 
+                // Ctrl+F (Cmd+F on macOS) jumps to the search box with its text selected
+                let find = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F);
+                if ui.input_mut(|i| i.consume_shortcut(&find)) {
+                    self.focus_search = true;
+                    self.select_search = true;
+                }
+
                 let mut text_edit = egui::TextEdit::singleline(search_string).hint_text("Search");
                 if !any_matches {
                     text_edit = text_edit.text_color(ui.visuals().error_fg_color);
@@ -2567,6 +2577,17 @@ impl eframe::App for App {
                     self.scroll_to_match = false;
                 } else if self.focus_search {
                     res.request_focus();
+                    if std::mem::take(&mut self.select_search) {
+                        use egui::text::{CCursor, CCursorRange};
+                        let mut state =
+                            egui::TextEdit::load_state(ui.ctx(), res.id).unwrap_or_default();
+                        let all = CCursorRange::two(
+                            CCursor::new(0),
+                            CCursor::new(search_string.chars().count()),
+                        );
+                        state.cursor.set_char_range(Some(all));
+                        state.store(ui.ctx(), res.id);
+                    }
                     self.focus_search = false;
                 }
             });

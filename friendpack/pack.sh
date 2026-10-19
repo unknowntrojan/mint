@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build the two friendpack downloads:
 #   mint-installer-DATE.zip  mint (Linux + Windows), the Oodle libraries and the install scripts.
-#                            Small; re-post it whenever mint changes.
+#                            mint is the latest published release (../release.sh), so it updates
+#                            itself from then on; the installer only matters for new friends.
 #   mint-mods-DATE.zip       your config (incl. the mod.io OAuth token), profiles (mod_data.json)
 #                            and mod cache. Big; friends only need it once. The DRG pak path is
 #                            nulled out; the installer fills it in per machine. Your publish key
@@ -21,12 +22,12 @@ usage: $0 [-o DIR] [--no-installer | --no-mods] [--profile NAME]... [--oodle-dir
   --oodle-dir DIR   directory holding $OODLE_LINUX and $OODLE_WIN
                     (default: $repo/friendpack/oodle). Checked against the SHA-256s that
                     upstream oodle_loader pins. mint never downloads them itself.
-  --linux-bin PATH  use this Linux mint binary instead of building from this repo
-  --win-exe PATH    use this mint.exe instead of building from this repo
+  --linux-bin PATH  use this Linux mint binary instead of the latest release
+  --win-exe PATH    use this mint.exe instead of the latest release
 
-Without --linux-bin / --win-exe the binaries are built from this repo with cargo.
-Building (either target) needs x86_64-w64-mingw32-gcc (Fedora: mingw64-gcc), because the
-hook DLL is always cross-compiled for Windows/Proton.
+Without --linux-bin / --win-exe the binaries are the latest release on the preset server,
+downloaded and checked against its signature. Only release builds update themselves; publish
+one with ../release.sh first.
 EOF
 }
 
@@ -80,19 +81,16 @@ build_installer() {
 	check_oodle "$OODLE_LINUX" "$OODLE_LINUX_SHA256"
 	check_oodle "$OODLE_WIN" "$OODLE_WIN_SHA256"
 
-	local root=$stage/mint-installer target_dir
+	local root=$stage/mint-installer target_dir release
 	mkdir -p "$root/bin"
 	if [[ -z $linux_bin || -z $win_exe ]]; then
 		target_dir=$(cargo metadata --format-version 1 --no-deps --manifest-path "$repo/Cargo.toml" |
 			python3 -I -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
-	fi
-	if [[ -z $linux_bin ]]; then
-		cargo build --release --manifest-path "$repo/Cargo.toml"
-		linux_bin=$target_dir/release/mint
-	fi
-	if [[ -z $win_exe ]]; then
-		cargo build --release --manifest-path "$repo/Cargo.toml" --target x86_64-pc-windows-gnu
-		win_exe=$target_dir/x86_64-pc-windows-gnu/release/mint.exe
+		cargo build -q -p mint_release --manifest-path "$repo/Cargo.toml"
+		release=$("$target_dir/debug/mint_release" download "$stage/release")
+		echo "mint: release $release"
+		linux_bin=${linux_bin:-$stage/release/mint}
+		win_exe=${win_exe:-$stage/release/mint.exe}
 	fi
 	install -m755 "$linux_bin" "$root/bin/mint"
 	install -m644 "$win_exe" "$root/bin/mint.exe"

@@ -152,7 +152,7 @@ fn read(path: &Path) -> io::Result<Preset> {
 }
 
 /// Writes via a temporary file and rename, so readers never see a partial file.
-fn write_atomic(dir: &Path, name: &str, data: &[u8]) -> io::Result<()> {
+pub(crate) fn write_atomic(dir: &Path, name: &str, data: &[u8]) -> io::Result<()> {
     let tmp = dir.join(format!(".{name}.tmp"));
     let mut f = fs::File::create(&tmp)?;
     f.write_all(data)?;

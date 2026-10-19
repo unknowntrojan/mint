@@ -3,8 +3,10 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
-use mint_server::{AppState, keys, router, store::Store};
+use mint_server::{AppState, keys, releases::Releases, router, store::Store};
+use remote_preset::release::{LINUX, Manifest, ReleaseFile, SignedManifest, WINDOWS};
 use remote_preset::{Preset, PresetMod, PresetSummary, PresetUpload};
+use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
 struct Server {
@@ -28,9 +30,16 @@ fn server() -> Server {
     }
 }
 
+/// Signs releases in tests; the server is set up to trust it.
+fn release_key() -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&[42; 32])
+}
+
 fn app(data: &std::path::Path) -> Router {
+    let public = hex::encode(release_key().verifying_key().to_bytes());
     router(AppState {
         store: Arc::new(Store::open(data).unwrap()),
+        releases: Arc::new(Releases::open(data, &public).unwrap()),
         keys_file: data.join("keys"),
     })
 }
@@ -272,5 +281,142 @@ async fn sections_are_stored_and_count_as_content() {
     assert_eq!(
         call(&s.app, put(Some(&s.key), json(&u))).await.0,
         StatusCode::UNPROCESSABLE_ENTITY
+    );
+}
+
+fn put_file(key: Option<&str>, release: u32, name: &str, data: Vec<u8>) -> Request<Body> {
+    let mut r = Request::put(format!("/api/v1/releases/{release}/files/{name}"));
+    if let Some(k) = key {
+        r = r.header(header::AUTHORIZATION, format!("Bearer {k}"));
+    }
+    r.body(Body::from(data)).unwrap()
+}
+
+fn put_manifest(key: &str, release: u32, signed: &SignedManifest) -> Request<Body> {
+    Request::put(format!("/api/v1/releases/{release}"))
+        .header(header::AUTHORIZATION, format!("Bearer {key}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_vec(signed).unwrap()))
+        .unwrap()
+}
+
+fn manifest(release: u32, files: &[(&str, &str, &[u8])]) -> Manifest {
+    Manifest {
+        release,
+        published: 0,
+        notes: String::new(),
+        files: files
+            .iter()
+            .map(|(target, name, data)| {
+                let file = ReleaseFile {
+                    name: name.to_string(),
+                    size: data.len() as u64,
+                    sha256: hex::encode(Sha256::digest(data)),
+                };
+                (target.to_string(), file)
+            })
+            .collect(),
+    }
+}
+
+#[tokio::test]
+async fn releases_upload_publish_and_download() {
+    let s = server();
+    let k = s.key.as_str();
+    // bigger than the preset body limit: release uploads stream
+    let linux = vec![1u8; 700 * 1024];
+    let windows = b"MZ windows".to_vec();
+
+    assert_eq!(
+        call(&s.app, get("/api/v1/releases/latest")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(&s.app, put_file(None, 1, "mint-1", linux.clone()))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(&s.app, put_file(Some(k), 1, "../keys", linux.clone()))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(&s.app, put_file(Some(k), 1, "mint-1", linux.clone()))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+
+    // windows file still missing: refused
+    let m = manifest(
+        1,
+        &[(LINUX, "mint-1", &linux), (WINDOWS, "mint-1.exe", &windows)],
+    );
+    let signed = SignedManifest::sign(&m, &release_key());
+    assert_eq!(
+        call(&s.app, put_manifest(k, 1, &signed)).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    // unpublished files aren't served
+    assert_eq!(
+        call(&s.app, get("/api/v1/releases/1/files/mint-1")).await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    call(&s.app, put_file(Some(k), 1, "mint-1.exe", windows.clone())).await;
+    // signed with another key: refused even with a valid publish key
+    let forged = SignedManifest::sign(&m, &ed25519_dalek::SigningKey::from_bytes(&[1; 32]));
+    assert_eq!(
+        call(&s.app, put_manifest(k, 1, &forged)).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    // manifest for another number
+    assert_eq!(
+        call(&s.app, put_manifest(k, 2, &signed)).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        call(&s.app, put_manifest(k, 1, &signed)).await.0,
+        StatusCode::OK
+    );
+
+    let (st, _, body) = call(&s.app, get("/api/v1/releases/latest")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(
+        serde_json::from_slice::<SignedManifest>(&body).unwrap(),
+        signed
+    );
+
+    let (st, h, body) = call(&s.app, get("/api/v1/releases/1/files/mint-1")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body, linux);
+    assert!(
+        h[header::CACHE_CONTROL]
+            .to_str()
+            .unwrap()
+            .contains("immutable")
+    );
+
+    // published releases are frozen
+    assert_eq!(
+        call(&s.app, put_file(Some(k), 1, "mint-1", vec![9]))
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(&s.app, put_manifest(k, 1, &signed)).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    // a restarted server knows the latest release
+    let restarted = app(&s.data);
+    let (_, _, body) = call(&restarted, get("/api/v1/releases/latest")).await;
+    assert_eq!(
+        serde_json::from_slice::<SignedManifest>(&body).unwrap(),
+        signed
     );
 }

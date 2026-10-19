@@ -10,16 +10,18 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio", "tracing"] }
+futures-util = { version = "0.3.34", default-features = false }
 getrandom = "0.4.3"
 hex = "0.4.3"
 remote_preset = { path = "../remote_preset" }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10.9"
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "signal"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt-multi-thread", "net", "signal"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+ed25519-dalek = { version = "2.2.0", default-features = false }
 tempfile = "3.21.0"
 tower = { version = "0.5.3", features = ["util"] }

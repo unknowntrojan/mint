@@ -1,27 +1,37 @@
-//! HTTP API for remote presets.
+//! HTTP API for remote presets and mint releases.
 //!
 //! - `GET    /api/v1/presets`                   list of all presets (latest revisions)
 //! - `GET    /api/v1/presets/{slug}`            latest revision
 //! - `GET    /api/v1/presets/{slug}/{revision}` a specific revision (immutable, cacheable)
 //! - `PUT    /api/v1/presets`                   publish (`Authorization: Bearer <publish key>`)
 //! - `DELETE /api/v1/presets/{slug}`            unpublish (same auth)
+//! - `GET    /api/v1/releases/latest`           signed manifest of the latest release
+//! - `PUT    /api/v1/releases/{n}/files/{name}` upload a file of unpublished release n (auth)
+//! - `PUT    /api/v1/releases/{n}`              publish release n with its signed manifest (auth)
+//! - `GET    /api/v1/releases/{n}/files/{name}` a file of a published release (immutable)
 //! - `GET    /health`
 
 pub mod keys;
+pub mod releases;
 pub mod store;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, put};
 use axum::{Json, Router};
+use futures_util::StreamExt;
 use remote_preset::PresetUpload;
+use remote_preset::release::{MAX_FILE_SIZE, SignedManifest};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{info, warn};
 
+use releases::{PublishError, Releases};
 use store::{Store, valid_slug};
 
 /// Uploads are a few KB; this leaves room for very large presets.
@@ -30,6 +40,7 @@ const MAX_BODY: usize = 512 * 1024;
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<Store>,
+    pub releases: Arc<Releases>,
     pub keys_file: PathBuf,
 }
 
@@ -39,6 +50,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/presets", get(list).put(publish))
         .route("/api/v1/presets/{slug}", get(latest).delete(unpublish))
         .route("/api/v1/presets/{slug}/{revision}", get(revision))
+        .route("/api/v1/releases/latest", get(latest_release))
+        .route("/api/v1/releases/{release}", put(publish_release))
+        .route(
+            "/api/v1/releases/{release}/files/{name}",
+            get(release_file).put(upload_release_file),
+        )
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .with_state(state)
 }
@@ -170,4 +187,128 @@ async fn unpublish(
     } else {
         Err(not_found())
     }
+}
+
+async fn latest_release(State(s): State<AppState>) -> Result<Response, ApiError> {
+    let signed = s
+        .releases
+        .latest()
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no release yet".into()))?;
+    Ok(fresh(Json(signed)))
+}
+
+async fn upload_release_file(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((release, name)): Path<(u32, String)>,
+    body: Body,
+) -> Result<StatusCode, ApiError> {
+    let publisher = authorize(&s, &headers).await?;
+    let too_large = || {
+        ApiError(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("files are limited to {MAX_FILE_SIZE} bytes"),
+        )
+    };
+    let announced = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok()?.parse::<u64>().ok());
+    if announced.is_some_and(|n| n > MAX_FILE_SIZE) {
+        return Err(too_large());
+    }
+    let releases = s.releases.clone();
+    let file_name = name.clone();
+    let path = blocking(move || releases.upload_path(release, &file_name).map_err(internal))
+        .await?
+        .ok_or_else(|| {
+            ApiError(
+                StatusCode::CONFLICT,
+                format!(
+                    "release {release} is published already, or {name:?} is no valid file name"
+                ),
+            )
+        })?;
+
+    let tmp = path.with_file_name(format!(".{name}.tmp"));
+    let received = async {
+        let mut file = tokio::fs::File::create(&tmp).await.map_err(internal)?;
+        let mut size = 0u64;
+        let mut stream = body.into_data_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
+            size += chunk.len() as u64;
+            if size > MAX_FILE_SIZE {
+                return Err(too_large());
+            }
+            file.write_all(&chunk).await.map_err(internal)?;
+        }
+        file.sync_all().await.map_err(internal)?;
+        Ok(size)
+    }
+    .await;
+    let size = match received {
+        Ok(size) => size,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(e);
+        }
+    };
+    tokio::fs::rename(&tmp, &path).await.map_err(internal)?;
+    info!("{publisher} uploaded {name} for release {release} ({size} bytes)");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn publish_release(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(release): Path<u32>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let publisher = authorize(&s, &headers).await?;
+    let signed: SignedManifest = serde_json::from_slice(&body)
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("invalid manifest: {e}")))?;
+    let releases = s.releases.clone();
+    let manifest = blocking(move || {
+        releases.publish(release, signed).map_err(|e| match e {
+            PublishError::Invalid(e) => ApiError(StatusCode::UNPROCESSABLE_ENTITY, e),
+            PublishError::Io(e) => internal(e),
+        })
+    })
+    .await?;
+    info!(
+        "{publisher} published release {} ({} files)",
+        manifest.release,
+        manifest.files.len()
+    );
+    Ok(fresh(Json(manifest)))
+}
+
+async fn release_file(
+    State(s): State<AppState>,
+    Path((release, name)): Path<(u32, String)>,
+) -> Result<Response, ApiError> {
+    let releases = s.releases.clone();
+    let path = blocking(move || Ok(releases.file(release, &name)))
+        .await?
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no such file".into()))?;
+    let file = tokio::fs::File::open(&path).await.map_err(internal)?;
+    let size = file.metadata().await.map_err(internal)?.len();
+    let stream = futures_util::stream::try_unfold(file, |mut file| async move {
+        let mut buf = vec![0; 1 << 16];
+        let n = file.read(&mut buf).await?;
+        buf.truncate(n);
+        Ok::<_, std::io::Error>((n > 0).then(|| (Bytes::from(buf), file)))
+    });
+    let mut r = Body::from_stream(stream).into_response();
+    let h = r.headers_mut();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    h.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
+    Ok(r)
 }

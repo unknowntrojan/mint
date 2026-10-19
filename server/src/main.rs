@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use mint_server::{AppState, keys, router, store::Store};
+use mint_server::{AppState, keys, releases::Releases, router, store::Store};
 use tracing::info;
 
 const USAGE: &str = "usage:
@@ -51,8 +51,11 @@ async fn serve(data: PathBuf, keys_file: PathBuf) -> Result<()> {
     if !keys_file.exists() {
         info!("no {} yet, publishing is disabled", keys_file.display());
     }
+    let releases = Releases::open(&data, remote_preset::release::PUBLIC_KEY)
+        .with_context(|| format!("opening releases in {}", data.display()))?;
     let app = router(AppState {
         store: Arc::new(store),
+        releases: Arc::new(releases),
         keys_file,
     });
 

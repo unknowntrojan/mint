@@ -3122,6 +3122,8 @@ version = "0.2.10"
 dependencies = [
  "anyhow",
  "axum",
+ "ed25519-dalek",
+ "futures-util",
  "getrandom 0.4.3",
  "hex",
  "remote_preset",

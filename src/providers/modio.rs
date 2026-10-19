@@ -62,6 +62,16 @@ inventory::submit! {
     }
 }
 
+/// The file a mod's "latest" currently resolves to, if the mod is cached.
+pub fn cached_latest_modfile(cache: &ProviderCache, mod_id: u32) -> Option<u32> {
+    let cache = cache.read().unwrap();
+    cache
+        .get::<ModioCache>(MODIO_PROVIDER_ID)?
+        .mods
+        .get(&mod_id)?
+        .latest_modfile
+}
+
 fn format_spec(name_id: &str, mod_id: u32, file_id: Option<u32>) -> ModSpecification {
     ModSpecification::new(if let Some(file_id) = file_id {
         format!("https://mod.io/g/drg/m/{name_id}#{mod_id}/{file_id}")

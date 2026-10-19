@@ -1,6 +1,9 @@
+use remote_preset::Preset;
+
 use super::{colors, custom_popup_below_widget, is_committed};
 
-use crate::state::{ModData_v0_1_0 as ModData, ModProfile_v0_1_0 as ModProfile};
+use crate::remote;
+use crate::state::ModData_v0_1_0 as ModData;
 
 #[derive(Debug, Clone)]
 struct NamePopup {
@@ -17,7 +20,7 @@ impl Default for NamePopup {
     }
 }
 
-pub trait NamedEntries<E> {
+pub trait NamedEntries {
     fn len(&self) -> usize;
     fn contains(&self, name: &str) -> bool;
     fn select(&mut self, name: String);
@@ -26,52 +29,117 @@ pub trait NamedEntries<E> {
     fn remove_selected(&mut self);
     fn rename_selected(&mut self, new_name: String);
     fn duplicate_selected(&mut self, new_name: String);
-    fn entries<'s>(&'s mut self) -> Box<dyn Iterator<Item = (&'s String, &'s E)> + 's>;
+    /// The names to choose from; `None` draws a separator.
+    fn names(&self) -> Vec<Option<String>>;
+    /// Whether the selected entry can be renamed and deleted.
+    fn editable(&self) -> bool {
+        true
+    }
+    /// Suggested name for a duplicate of the selected entry.
+    fn duplicate_name(&self) -> String {
+        format!("{} - Copy", self.selected_name())
+    }
 }
 
-impl NamedEntries<ModProfile> for ModData {
+/// The preset dropdown: local presets, then the read-only remote ones.
+pub struct Presets<'a> {
+    pub data: &'a mut ModData,
+    /// (shown name, preset)
+    pub remote: Vec<(String, &'a Preset)>,
+    /// slug of the selected remote preset; `None` when a local one is selected
+    pub selected_remote: &'a mut Option<String>,
+}
+
+impl<'a> Presets<'a> {
+    pub fn remote_selected(&self) -> Option<&(String, &'a Preset)> {
+        let slug = self.selected_remote.as_ref()?;
+        self.remote.iter().find(|(_, p)| p.slug == *slug)
+    }
+}
+
+impl NamedEntries for Presets<'_> {
     fn len(&self) -> usize {
-        self.profiles.len()
+        self.data.profiles.len()
     }
     fn contains(&self, name: &str) -> bool {
-        self.profiles.contains_key(name)
+        // local names can't look like remote ones
+        self.data.profiles.contains_key(name) || name.starts_with(remote::PREFIX)
     }
     fn select(&mut self, name: String) {
-        self.active_profile = name;
+        match self.remote.iter().find(|(shown, _)| *shown == name) {
+            Some((_, preset)) => *self.selected_remote = Some(preset.slug.clone()),
+            None => {
+                *self.selected_remote = None;
+                self.data.active_profile = name;
+            }
+        }
     }
     fn selected_name(&self) -> &str {
-        &self.active_profile
+        match self.remote_selected() {
+            Some((shown, _)) => shown,
+            None => &self.data.active_profile,
+        }
     }
     fn add_new(&mut self, name: &str) {
-        self.add_profile(name);
+        self.data.add_profile(name);
+        *self.selected_remote = None;
     }
     fn remove_selected(&mut self) {
-        self.remove_active_profile();
+        if self.selected_remote.is_none() {
+            self.data.remove_active_profile();
+        }
     }
     fn rename_selected(&mut self, new_name: String) {
-        let tmp = self.profiles.remove(&self.active_profile).unwrap();
-        self.profiles.insert(new_name.clone(), tmp);
-        self.active_profile = new_name;
+        if self.selected_remote.is_some() {
+            return;
+        }
+        let tmp = self
+            .data
+            .profiles
+            .remove(&self.data.active_profile)
+            .unwrap();
+        self.data.profiles.insert(new_name.clone(), tmp);
+        self.data.active_profile = new_name;
     }
     fn duplicate_selected(&mut self, new_name: String) {
-        let new = self.get_active_profile().clone();
-        self.profiles.insert(new_name.clone(), new);
-        self.active_profile = new_name;
+        if let Some(&(_, preset)) = self.remote_selected() {
+            remote::copy_to_profile(self.data, preset, &new_name);
+            *self.selected_remote = None;
+            return;
+        }
+        let new = self.data.get_active_profile().clone();
+        self.data.profiles.insert(new_name.clone(), new);
+        self.data.active_profile = new_name;
     }
-    fn entries<'s>(&'s mut self) -> Box<dyn Iterator<Item = (&'s String, &'s ModProfile)> + 's> {
-        Box::new(self.profiles.iter())
+    fn names(&self) -> Vec<Option<String>> {
+        let mut names: Vec<Option<String>> = self.data.profiles.keys().cloned().map(Some).collect();
+        if !self.remote.is_empty() {
+            names.push(None);
+            names.extend(self.remote.iter().map(|(shown, _)| Some(shown.clone())));
+        }
+        names
+    }
+    fn editable(&self) -> bool {
+        self.selected_remote.is_none()
+    }
+    fn duplicate_name(&self) -> String {
+        match self.remote_selected() {
+            Some((_, preset)) if !self.contains(&preset.name) => preset.name.clone(),
+            Some((_, preset)) => format!("{} - Copy", preset.name),
+            None => format!("{} - Copy", self.data.active_profile),
+        }
     }
 }
 
 /// Render and return whether any changes were made
-pub(crate) fn ui<E, N>(
+pub(crate) fn ui<N>(
     ui: &mut egui::Ui,
     name: &str,
     entries: &mut N,
     additional_ui: Option<impl FnOnce(&mut egui::Ui, &mut N)>,
 ) -> bool
 where
-    N: NamedEntries<E>,
+    N: NamedEntries,
 {
     let mut modified = false;
     ui.push_id(name, |ui| {
@@ -96,11 +164,11 @@ where
     modified
 }
 
-fn mk_delete<E, N>(ui: &mut egui::Ui, name: &str, entries: &mut N, modified: &mut bool)
+fn mk_delete<N>(ui: &mut egui::Ui, name: &str, entries: &mut N, modified: &mut bool)
 where
-    N: NamedEntries<E>,
+    N: NamedEntries,
 {
-    ui.add_enabled_ui(entries.len() > 1, |ui| {
+    ui.add_enabled_ui(entries.len() > 1 && entries.editable(), |ui| {
         ui.scope(|ui| {
             ui.visuals_mut().widgets.hovered.weak_bg_fill = colors::DARK_RED;
             ui.visuals_mut().widgets.active.weak_bg_fill = colors::DARKER_RED;
@@ -116,9 +184,9 @@ where
     });
 }
 
-fn mk_add<E, N>(ui: &mut egui::Ui, name: &str, entries: &mut N, modified: &mut bool)
+fn mk_add<N>(ui: &mut egui::Ui, name: &str, entries: &mut N, modified: &mut bool)
 where
-    N: NamedEntries<E>,
+    N: NamedEntries,
 {
     ui.add_enabled_ui(true, |ui| {
         let response = ui
@@ -149,11 +217,11 @@ where
     });
 }
 
-fn mk_rename<E, N>(ui: &mut egui::Ui, name: &str, entries: &mut N, modified: &mut bool)
+fn mk_rename<N>(ui: &mut egui::Ui, name: &str, entries: &mut N, modified: &mut bool)
 where
-    N: NamedEntries<E>,
+    N: NamedEntries,
 {
-    ui.add_enabled_ui(true, |ui| {
+    ui.add_enabled_ui(entries.editable(), |ui| {
         let response = ui
             .button("Rename")
             .on_hover_text_at_pointer(format!("Rename {name}"));
@@ -176,13 +244,16 @@ where
     });
 }
 
-fn mk_duplicate<E, N>(ui: &mut egui::Ui, name: &str, entries: &mut N, modified: &mut bool)
+fn mk_duplicate<N>(ui: &mut egui::Ui, name: &str, entries: &mut N, modified: &mut bool)
 where
-    N: NamedEntries<E>,
+    N: NamedEntries,
 {
-    let response = ui
-        .button("🗐")
-        .on_hover_text_at_pointer(format!("Duplicate {name}"));
+    let hint = if entries.editable() {
+        format!("Duplicate {name}")
+    } else {
+        "Copy to my presets, to change it".to_string()
+    };
+    let response = ui.button("🗐").on_hover_text_at_pointer(hint);
     let popup_id = ui.make_persistent_id(format!("duplicate-{name}"));
     if response.clicked() {
         egui::Popup::open_id(ui.ctx(), popup_id);
@@ -193,7 +264,7 @@ where
         name,
         popup_id,
         response,
-        |state| format!("{} - Copy", state.selected_name()),
+        |state| state.duplicate_name(),
         |state, name| {
             state.duplicate_selected(name);
             *modified = true;
@@ -201,9 +272,9 @@ where
     );
 }
 
-fn mk_dropdown<E, N>(ui: &mut egui::Ui, name: &str, entries: &mut N, modified: &mut bool)
+fn mk_dropdown<N>(ui: &mut egui::Ui, name: &str, entries: &mut N, modified: &mut bool)
 where
-    N: NamedEntries<E>,
+    N: NamedEntries,
 {
     let mut selected = entries.selected_name().to_owned();
 
@@ -211,9 +282,16 @@ where
         .width(ui.available_width())
         .selected_text(selected.clone())
         .show_ui(ui, |ui| {
-            entries.entries().for_each(|(k, _)| {
-                ui.selectable_value(&mut selected, k.to_owned(), k);
-            })
+            for name in entries.names() {
+                match name {
+                    Some(name) => {
+                        ui.selectable_value(&mut selected, name.clone(), name);
+                    }
+                    None => {
+                        ui.separator();
+                    }
+                }
+            }
         });
 
     if selected != entries.selected_name() {
@@ -223,7 +301,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn mk_name_popup<E, N>(
+fn mk_name_popup<N>(
     entries: &mut N,
     ui: &egui::Ui,
     name: &str,
@@ -232,7 +310,7 @@ fn mk_name_popup<E, N>(
     default_name: impl Fn(&mut N) -> String,
     mut accept: impl FnMut(&mut N, String),
 ) where
-    N: NamedEntries<E>,
+    N: NamedEntries,
 {
     let data_id = popup_id.with("data");
     let mut popup: NamePopup = ui.data(|data| data.get_temp(data_id)).unwrap_or_default();

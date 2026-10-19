@@ -3020,6 +3020,7 @@ dependencies = [
  "postcard",
  "rayon",
  "regex",
+ "remote_preset",
  "repak",
  "reqwest",
  "reqwest-middleware",

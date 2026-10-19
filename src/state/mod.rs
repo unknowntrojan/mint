@@ -364,6 +364,9 @@ pub struct Config {
     /// Lets this install publish presets. friendpack leaves it out of the mods pack.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publish_key: Option<String>,
+    /// Slug of the selected remote preset; `None` when a local preset is selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_preset: Option<String>,
 }
 
 /// Where `[Remote]` presets come from unless the config says otherwise.
@@ -452,6 +455,7 @@ impl Default for Config!["0.0.0"] {
             compress_pak: false,
             preset_server: None,
             publish_key: None,
+            remote_preset: None,
         }
     }
 }

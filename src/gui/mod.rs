@@ -39,8 +39,13 @@ use crate::Dirs;
 use crate::gui::find_string::searchable_text;
 use crate::mod_lints::{LintId, LintReport, SplitAssetPair};
 use crate::providers::ProviderError;
+use crate::remote::{self, RemotePresets};
 use crate::state::config::ConfigWrapper;
 use crate::state::mod_list::{DeletedMod, Row, drag_rows};
+use remote_preset::{Preset, PresetMod};
+
+/// Cache of the preset server's presets, in the cache directory.
+const REMOTE_PRESETS_FILE: &str = "remote_presets.json";
 use crate::state::{DEFAULT_PRESET_SERVER, SortingConfig, VersionAnnotatedConfig};
 use crate::{
     MintError,
@@ -165,6 +170,138 @@ pub struct App {
     /// Mods deleted this session, most recent last, for "Undo Deletion".
     deleted_mods: Vec<DeletedMod>,
     renaming_section: Option<SectionRename>,
+    /// what the preset server offered last (cached on disk)
+    remote_presets: RemotePresets,
+    remote_rid: Option<MessageHandle<()>>,
+    /// publish or unpublish in flight
+    publish_rid: Option<MessageHandle<()>>,
+}
+
+/// What a button in the preset bar asked for.
+enum PresetAction {
+    Publish,
+    Unpublish(String),
+    Refresh,
+}
+
+/// A button that asks before doing anything. Returns true once confirmed.
+fn confirm_button(ui: &mut Ui, label: &str, enabled: bool, hint: &str, question: &str) -> bool {
+    let res = ui
+        .add_enabled(enabled, Button::new(label))
+        .on_hover_text_at_pointer(hint);
+    let id = res.id.with("confirm");
+    if res.clicked() {
+        egui::Popup::open_id(ui.ctx(), id);
+    }
+    let mut confirmed = false;
+    egui::Popup::from_response(&res)
+        .id(id)
+        .open_memory(None)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(300.0);
+            ui.label(question);
+            ui.horizontal(|ui| {
+                if ui.button(label).clicked() {
+                    confirmed = true;
+                    egui::Popup::close_id(ui.ctx(), id);
+                }
+                if ui.button("Cancel").clicked() {
+                    egui::Popup::close_id(ui.ctx(), id);
+                }
+            });
+        });
+    confirmed
+}
+
+/// A remote preset, read-only.
+fn ui_remote(
+    ui: &mut Ui,
+    store: &ModStore,
+    preset: &Preset,
+    search: &str,
+    scroll_to_match: &mut bool,
+) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new(format!("{}{}", remote::PREFIX, preset.name)).strong());
+        ui.weak(format!(
+            "revision {} by {}, published {}",
+            preset.revision,
+            preset.publisher,
+            remote::ago(preset.published)
+        ));
+    });
+    ui.weak(
+        "Read-only. Install mods uses it as is; 🗐 copies it to your presets so you can change it.",
+    );
+    ui.add_space(4.);
+
+    // mods grouped under their section headers; mods above the first header have none
+    let mut groups: Vec<(Option<&str>, Vec<&PresetMod>)> = vec![(None, Vec::new())];
+    let mut headers = preset.sections.iter().peekable();
+    for m in &preset.mods {
+        while let Some(section) = headers.next_if(|s| s.before == Some(m.mod_id)) {
+            groups.push((Some(section.name.as_str()), Vec::new()));
+        }
+        groups.last_mut().unwrap().1.push(m);
+    }
+    groups.extend(headers.map(|s| (Some(s.name.as_str()), Vec::new())));
+
+    let row = |ui: &mut Ui, m: &PresetMod, scroll_to_match: &mut bool| {
+        ui.horizontal(|ui| {
+            if !m.enabled {
+                let vis = ui.visuals_mut();
+                vis.override_text_color = Some(vis.weak_text_color());
+                vis.hyperlink_color = vis.weak_text_color();
+            }
+            let mut enabled = m.enabled;
+            ui.add_enabled(false, toggle_switch(&mut enabled));
+            let spec = remote::spec(m);
+            let version = store
+                .get_version_name(&spec)
+                .unwrap_or_else(|| "latest".into());
+            ui.add_sized([110., 18.], egui::Label::new(version).truncate());
+            let name = store
+                .get_mod_info(&spec)
+                .map(|i| i.name)
+                .or_else(|| (!m.name.is_empty()).then(|| m.name.clone()))
+                .unwrap_or_else(|| m.name_id.clone());
+            let found = searchable_text(&name, search, {
+                TextFormat {
+                    color: ui.visuals().hyperlink_color,
+                    ..Default::default()
+                }
+            });
+            let res = ui.hyperlink_to(found.job, remote::page_url(m));
+            if found.is_match && *scroll_to_match {
+                res.scroll_to_me(None);
+                *scroll_to_match = false;
+            }
+        });
+    };
+
+    egui::ScrollArea::vertical()
+        .auto_shrink(false)
+        .show(ui, |ui| {
+            for (i, (name, mods)) in groups.iter().enumerate() {
+                match name {
+                    None => mods.iter().for_each(|m| row(ui, m, scroll_to_match)),
+                    Some(name) => {
+                        let on = mods.iter().filter(|m| m.enabled).count();
+                        egui::CollapsingHeader::new(
+                            RichText::new(format!("{name}  ({on}/{} enabled)", mods.len()))
+                                .strong()
+                                .size(15.0),
+                        )
+                        .id_salt(("remote-section", &preset.slug, i))
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            mods.iter().for_each(|m| row(ui, m, scroll_to_match))
+                        });
+                    }
+                }
+            }
+        });
 }
 
 /// A section header being renamed in place.
@@ -316,6 +453,7 @@ impl App {
     ) -> Result<Self, MintError> {
         let (tx, rx) = mpsc::channel(10);
         let state = State::init(dirs)?;
+        let remote_presets = RemotePresets::load(&state.dirs.cache_dir.join(REMOTE_PRESETS_FILE));
 
         Ok(Self {
             args,
@@ -351,6 +489,9 @@ impl App {
             problematic_mod_id: None,
             deleted_mods: Vec::new(),
             renaming_section: None,
+            remote_presets,
+            remote_rid: None,
+            publish_rid: None,
         })
     }
 
@@ -1133,6 +1274,19 @@ impl App {
         if ctx.needs_save {
             self.state.mod_data.save().unwrap();
         }
+    }
+
+    /// The selected remote preset, if one is selected and the server still offers it.
+    fn selected_remote(&self) -> Option<&Preset> {
+        let slug = self.state.config.remote_preset.as_ref()?;
+        self.remote_presets
+            .for_server(self.state.config.preset_server())
+            .iter()
+            .find(|p| p.slug == *slug)
+    }
+
+    fn remote_presets_path(&self) -> PathBuf {
+        self.state.dirs.cache_dir.join(REMOTE_PRESETS_FILE)
     }
 
     fn parse_mods(&self) -> Vec<ModSpecification> {
@@ -2133,6 +2287,7 @@ impl eframe::App for App {
             ctx.memory_mut(|m| m.options.theme_preference = theme);
 
             message::CheckUpdates::send(self, ctx);
+            message::FetchRemotePresets::send(self, ctx, false);
         }
 
         // message handling
@@ -2191,19 +2346,23 @@ impl eframe::App for App {
                             }
 
                             if button.clicked() {
-                                let mut mod_configs = Vec::new();
                                 let mut mods = Vec::new();
-                                let active_profile = self.state.mod_data.active_profile.clone();
-                                self.state
-                                    .mod_data
-                                    .for_each_enabled_mod(&active_profile, |mc| {
-                                        mod_configs.push(mc.clone());
-                                    });
+                                if let Some(preset) = self.selected_remote() {
+                                    mods = remote::install_specs(preset);
+                                } else {
+                                    let mut mod_configs = Vec::new();
+                                    let active_profile = self.state.mod_data.active_profile.clone();
+                                    self.state
+                                        .mod_data
+                                        .for_each_enabled_mod(&active_profile, |mc| {
+                                            mod_configs.push(mc.clone());
+                                        });
 
-                                mod_configs.sort_by_key(|k| -k.priority);
+                                    mod_configs.sort_by_key(|k| -k.priority);
 
-                                for config in mod_configs {
-                                    mods.push(config.spec.clone());
+                                    for config in mod_configs {
+                                        mods.push(config.spec.clone());
+                                    }
                                 }
 
                                 self.last_action = None;
@@ -2232,6 +2391,11 @@ impl eframe::App for App {
                                 if let Some(pak_path) = &self.state.config.drg_pak_path {
                                     let mut mods = HashSet::default();
                                     let active_profile = self.state.mod_data.active_profile.clone();
+                                    if let Some(preset) = self.selected_remote() {
+                                        mods.extend(
+                                            preset.mods.iter().filter(|m| m.enabled).map(|m| m.mod_id),
+                                        );
+                                    } else {
                                     self.state.mod_data.for_each_enabled_mod(
                                         &active_profile,
                                         |mc| {
@@ -2245,6 +2409,7 @@ impl eframe::App for App {
                                             }
                                         },
                                     );
+                                    }
 
                                     debug!("uninstalling mods: pak_path = {}", pak_path.display());
                                     self.last_action = Some(match uninstall(pak_path, mods) {
@@ -2284,8 +2449,9 @@ impl eframe::App for App {
                     ui.spinner();
                 }
                 if ui
-                    .button("Lint mods")
+                    .add_enabled(self.selected_remote().is_none(), Button::new("Lint mods"))
                     .on_hover_text("Lint mods in the current profile")
+                    .on_disabled_hover_text("Copy the remote preset to your presets to lint it")
                     .clicked()
                 {
                     self.lints_toggle_window = Some(WindowLintsToggle);
@@ -2372,19 +2538,72 @@ impl eframe::App for App {
             }
             // profile selection
 
-            let buttons = |ui: &mut Ui, mod_data: &mut ModData| {
+            let server = self.state.config.preset_server().to_string();
+            let can_publish = self.state.config.publish_key.is_some();
+            let publishing = self.publish_rid.is_some();
+            let refreshing = self.remote_rid.is_some();
+            let mut action = None;
+            let buttons = |ui: &mut Ui, presets: &mut named_combobox::Presets| {
                 if ui
                     .button("📋")
                     .on_hover_text_at_pointer("Copy profile mods")
                     .clicked()
                 {
-                    let mut mods = Vec::new();
-                    let active_profile = mod_data.active_profile.clone();
-                    mod_data.for_each_enabled_mod(&active_profile, |mc| {
-                        mods.push(mc.clone());
-                    });
-                    let mods = Self::build_mod_string(&mods);
+                    let mods = match presets.remote_selected() {
+                        Some((_, preset)) => remote::install_specs(preset)
+                            .into_iter()
+                            .map(|spec| spec.url + "\n")
+                            .collect(),
+                        None => {
+                            let mut mods = Vec::new();
+                            let data = &presets.data;
+                            data.for_each_enabled_mod(&data.active_profile, |mc| {
+                                mods.push(mc.clone());
+                            });
+                            Self::build_mod_string(&mods)
+                        }
+                    };
                     ui.ctx().copy_text(mods);
+                }
+                if ui
+                    .add_enabled(!refreshing, Button::new("⟳"))
+                    .on_hover_text_at_pointer(format!("Reload remote presets from {server}"))
+                    .clicked()
+                {
+                    action = Some(PresetAction::Refresh);
+                }
+                if can_publish {
+                    match presets.remote_selected() {
+                        Some((_, preset)) => {
+                            if confirm_button(
+                                ui,
+                                "Unpublish",
+                                !publishing,
+                                &format!("Remove it from {server}"),
+                                &format!(
+                                    "Unpublish \"{}\"? Nobody gets it any more; the server keeps its revisions.",
+                                    preset.name
+                                ),
+                            ) {
+                                action = Some(PresetAction::Unpublish(preset.slug.clone()));
+                            }
+                        }
+                        None => {
+                            let name = &presets.data.active_profile;
+                            if confirm_button(
+                                ui,
+                                "Publish",
+                                !publishing,
+                                &format!("Upload it to {server} as \"{}{name}\"", remote::PREFIX),
+                                &format!(
+                                    "Publish \"{name}\"? Everyone who uses \"{}{name}\" gets this version the next time mint starts.",
+                                    remote::PREFIX
+                                ),
+                            ) {
+                                action = Some(PresetAction::Publish);
+                            }
+                        }
+                    }
                 }
 
                 // TODO find better icon, flesh out multiple-view usage, fix GUI locking
@@ -2399,13 +2618,34 @@ impl eframe::App for App {
                 */
             };
 
-            if named_combobox::ui(
-                ui,
-                "profile",
-                self.state.mod_data.deref_mut().deref_mut(),
-                Some(buttons),
-            ) {
+            let mut selected_remote = self.state.config.remote_preset.clone();
+            let mut presets = named_combobox::Presets {
+                data: self.state.mod_data.deref_mut().deref_mut(),
+                remote: self
+                    .remote_presets
+                    .for_server(&server)
+                    .iter()
+                    .map(|p| (format!("{}{}", remote::PREFIX, p.name), p))
+                    .collect(),
+                selected_remote: &mut selected_remote,
+            };
+            if named_combobox::ui(ui, "profile", &mut presets, Some(buttons)) {
                 self.state.mod_data.save().unwrap();
+            }
+            if selected_remote != self.state.config.remote_preset {
+                self.state.config.remote_preset = selected_remote;
+                self.state.config.save().unwrap();
+            }
+            match action {
+                Some(PresetAction::Publish) => {
+                    let profile = self.state.mod_data.active_profile.clone();
+                    message::PublishPreset::send(self, ctx, &profile);
+                }
+                Some(PresetAction::Unpublish(slug)) => {
+                    message::UnpublishPreset::send(self, ctx, slug);
+                }
+                Some(PresetAction::Refresh) => message::FetchRemotePresets::send(self, ctx, true),
+                None => {}
             }
 
             ui.separator();
@@ -2511,7 +2751,22 @@ impl eframe::App for App {
             });
             ui.add_space(4.);
 
-            self.ui_profile(ui, &profile);
+            let remote = self.state.config.remote_preset.as_ref().and_then(|slug| {
+                self.remote_presets
+                    .for_server(self.state.config.preset_server())
+                    .iter()
+                    .find(|p| p.slug == *slug)
+            });
+            match remote {
+                Some(preset) => ui_remote(
+                    ui,
+                    &self.state.store,
+                    preset,
+                    &self.search_string,
+                    &mut self.scroll_to_match,
+                ),
+                None => self.ui_profile(ui, &profile),
+            }
 
             // must access memory outside of input lock to prevent deadlock
             let is_anything_focused = ctx.memory(|m| m.focused().is_some());

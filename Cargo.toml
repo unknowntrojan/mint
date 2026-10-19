@@ -64,6 +64,7 @@ image = { version = "0.25.6", default-features = false, features = ["png"] }
 indexmap = { version = "2.11.0", features = ["serde"] }
 inventory = "0.3.21"
 mint_lib = { path = "mint_lib" }
+remote_preset = { path = "remote_preset" }
 modio = { path = "vendor/modio-rs", default-features = false, features = ["rustls-tls"] }
 obake = { version = "1.0.5", features = ["serde"] }
 opener = "0.9.0"

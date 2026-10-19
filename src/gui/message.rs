@@ -17,6 +17,7 @@ use super::{
 use crate::gui::LastAction;
 use crate::integrate::*;
 use crate::mod_lints::{LintId, LintReport};
+use crate::remote::{self, RemotePresets};
 use crate::*;
 use crate::{
     providers::{FetchProgress, ModInfo, ModStore},
@@ -25,6 +26,7 @@ use crate::{
 use mint_lib::error::GenericError;
 use mint_lib::mod_info::MetaConfig;
 use mint_lib::update::GitHubRelease;
+use remote_preset::Preset;
 
 #[derive(Debug)]
 pub struct MessageHandle<S> {
@@ -43,6 +45,9 @@ pub enum Message {
     LintMods(Box<LintMods>),
     SelfUpdate(SelfUpdate),
     FetchSelfUpdateProgress(FetchSelfUpdateProgress),
+    FetchRemotePresets(FetchRemotePresets),
+    PublishPreset(PublishPreset),
+    UnpublishPreset(UnpublishPreset),
 }
 
 impl Message {
@@ -56,6 +61,9 @@ impl Message {
             Self::LintMods(msg) => msg.receive(app),
             Self::SelfUpdate(msg) => msg.receive(app),
             Self::FetchSelfUpdateProgress(msg) => msg.receive(app),
+            Self::FetchRemotePresets(msg) => msg.receive(app),
+            Self::PublishPreset(msg) => msg.receive(app),
+            Self::UnpublishPreset(msg) => msg.receive(app),
         }
     }
 }
@@ -723,4 +731,188 @@ async fn self_update_async(
     info!("update successful");
 
     Ok(original_exe_path)
+}
+
+#[derive(Debug)]
+pub struct FetchRemotePresets {
+    rid: RequestID,
+    /// asked for by the user: report the outcome
+    user: bool,
+    result: Result<RemotePresets, String>,
+}
+
+impl FetchRemotePresets {
+    pub fn send(app: &mut App, ctx: &egui::Context, user: bool) {
+        let rid = app.request_counter.next();
+        let tx = app.tx.clone();
+        let ctx = ctx.clone();
+        let server = app.state.config.preset_server().to_string();
+        let cached = app.remote_presets.clone();
+        let handle = tokio::spawn(async move {
+            let result = remote::fetch(&server, &cached).await;
+            tx.send(Message::FetchRemotePresets(Self { rid, user, result }))
+                .await
+                .unwrap();
+            ctx.request_repaint();
+        });
+        app.remote_rid = Some(MessageHandle {
+            rid,
+            handle,
+            state: (),
+        });
+    }
+
+    fn receive(self, app: &mut App) {
+        if Some(self.rid) != app.remote_rid.as_ref().map(|r| r.rid) {
+            return;
+        }
+        app.remote_rid = None;
+        match self.result {
+            Ok(presets) => {
+                if let Err(e) = presets.save(&app.remote_presets_path()) {
+                    warn!("saving remote presets: {e}");
+                }
+                if self.user {
+                    app.last_action = Some(LastAction::success(format!(
+                        "{} remote presets",
+                        presets.presets.len()
+                    )));
+                }
+                app.remote_presets = presets;
+                // an unpublished preset can't stay selected
+                if app.selected_remote().is_none() && app.state.config.remote_preset.is_some() {
+                    app.state.config.remote_preset = None;
+                    app.state.config.save().unwrap();
+                }
+            }
+            Err(e) => {
+                warn!("fetching remote presets: {e}");
+                if self.user {
+                    app.last_action = Some(LastAction::failure(format!("remote presets: {e}")));
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct PublishPreset {
+    rid: RequestID,
+    skipped: usize,
+    result: Result<Preset, String>,
+}
+
+impl PublishPreset {
+    pub fn send(app: &mut App, ctx: &egui::Context, profile: &str) {
+        let Some(key) = app.state.config.publish_key.clone() else {
+            return;
+        };
+        let (upload, skipped) = remote::upload(&app.state.mod_data, profile, &app.state.store);
+        let rid = app.request_counter.next();
+        let tx = app.tx.clone();
+        let ctx = ctx.clone();
+        let server = app.state.config.preset_server().to_string();
+        let handle = tokio::spawn(async move {
+            let result = remote::publish(&server, &key, &upload).await;
+            tx.send(Message::PublishPreset(Self {
+                rid,
+                skipped,
+                result,
+            }))
+            .await
+            .unwrap();
+            ctx.request_repaint();
+        });
+        app.last_action = None;
+        app.publish_rid = Some(MessageHandle {
+            rid,
+            handle,
+            state: (),
+        });
+    }
+
+    fn receive(self, app: &mut App) {
+        if Some(self.rid) != app.publish_rid.as_ref().map(|r| r.rid) {
+            return;
+        }
+        app.publish_rid = None;
+        match self.result {
+            Ok(preset) => {
+                let mut msg = format!(
+                    "published \"{}\" (revision {})",
+                    preset.name, preset.revision
+                );
+                if self.skipped > 0 {
+                    msg += &format!(", left out {} mods not on mod.io", self.skipped);
+                }
+                info!("{msg}");
+                app.last_action = Some(LastAction::success(msg));
+                let server = app.state.config.preset_server().to_string();
+                app.remote_presets.upsert(&server, preset);
+                if let Err(e) = app.remote_presets.save(&app.remote_presets_path()) {
+                    warn!("saving remote presets: {e}");
+                }
+            }
+            Err(e) => {
+                error!("publishing: {e}");
+                app.last_action = Some(LastAction::failure(format!("publishing: {e}")));
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct UnpublishPreset {
+    rid: RequestID,
+    slug: String,
+    result: Result<(), String>,
+}
+
+impl UnpublishPreset {
+    pub fn send(app: &mut App, ctx: &egui::Context, slug: String) {
+        let Some(key) = app.state.config.publish_key.clone() else {
+            return;
+        };
+        let rid = app.request_counter.next();
+        let tx = app.tx.clone();
+        let ctx = ctx.clone();
+        let server = app.state.config.preset_server().to_string();
+        let handle = tokio::spawn(async move {
+            let result = remote::unpublish(&server, &key, &slug).await;
+            tx.send(Message::UnpublishPreset(Self { rid, slug, result }))
+                .await
+                .unwrap();
+            ctx.request_repaint();
+        });
+        app.last_action = None;
+        app.publish_rid = Some(MessageHandle {
+            rid,
+            handle,
+            state: (),
+        });
+    }
+
+    fn receive(self, app: &mut App) {
+        if Some(self.rid) != app.publish_rid.as_ref().map(|r| r.rid) {
+            return;
+        }
+        app.publish_rid = None;
+        match self.result {
+            Ok(()) => {
+                app.remote_presets.presets.retain(|p| p.slug != self.slug);
+                if let Err(e) = app.remote_presets.save(&app.remote_presets_path()) {
+                    warn!("saving remote presets: {e}");
+                }
+                if app.state.config.remote_preset.as_deref() == Some(self.slug.as_str()) {
+                    app.state.config.remote_preset = None;
+                    app.state.config.save().unwrap();
+                }
+                app.last_action = Some(LastAction::success(format!("unpublished {}", self.slug)));
+            }
+            Err(e) => {
+                error!("unpublishing: {e}");
+                app.last_action = Some(LastAction::failure(format!("unpublishing: {e}")));
+            }
+        }
+    }
 }

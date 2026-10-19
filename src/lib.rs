@@ -3,6 +3,7 @@ pub mod gui;
 pub mod integrate;
 pub mod mod_lints;
 pub mod providers;
+pub mod remote;
 pub mod state;
 
 use std::ops::Deref;

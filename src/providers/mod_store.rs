@@ -227,6 +227,11 @@ impl ModStore {
             .is_pinned(spec, self.cache.clone())
     }
 
+    /// The mod.io file a mod's "latest" currently resolves to, if the mod is cached.
+    pub fn modio_latest_modfile(&self, mod_id: u32) -> Option<u32> {
+        super::modio::cached_latest_modfile(&self.cache, mod_id)
+    }
+
     pub fn get_version_name(&self, spec: &ModSpecification) -> Option<String> {
         self.get_provider(&spec.url)
             .unwrap()

@@ -64,12 +64,14 @@ use self::toggle_switch::toggle_switch;
 pub fn gui(dirs: Dirs, args: Option<Vec<String>>) -> Result<(), MintError> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_title("mint pint")
             .with_inner_size([900.0, 500.0])
             .with_drag_and_drop(true),
         ..Default::default()
     };
     eframe::run_native(
-        &format!("mint {}", mint_lib::built_info::GIT_VERSION.unwrap()),
+        // also the app ID (Wayland, window state storage), so it stays plain
+        "mint",
         options,
         Box::new(|cc| Ok(Box::new(App::new(cc, dirs, args)?))),
     )

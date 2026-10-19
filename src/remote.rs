@@ -15,7 +15,7 @@ use tracing::warn;
 use crate::providers::{ModSpecification, ModStore};
 use crate::state::mod_list::Row;
 use crate::state::{
-    ModConfig, ModData_v0_1_0 as ModData, ModOrGroup, ModProfile_v0_1_0 as ModProfile, Section,
+    ModConfig, ModData_v0_1_0 as ModData, ModProfile_v0_1_0 as ModProfile, Section,
 };
 
 /// Shown in front of remote presets in the preset list.
@@ -107,12 +107,7 @@ pub fn upload(data: &ModData, profile: &str, store: &ModStore) -> (PresetUpload,
     // mod ID of each entry, for the section anchors
     let mut ids: Vec<Option<u32>> = Vec::with_capacity(entries.len());
     let mut seen = HashSet::new();
-    for entry in entries {
-        let ModOrGroup::Individual(mc) = entry else {
-            skipped += 1;
-            ids.push(None);
-            continue;
-        };
+    for mc in entries {
         let info = store.get_mod_info(&mc.spec);
         let parsed = parse_modio(&mc.spec.url)
             .or_else(|| info.as_ref().and_then(|i| parse_modio(&i.spec.url)))
@@ -184,13 +179,11 @@ pub fn copy_to_profile(data: &mut ModData, preset: &Preset, name: &str) {
     let mods = preset
         .mods
         .iter()
-        .map(|m| {
-            ModOrGroup::Individual(ModConfig {
-                spec: spec(m),
-                required: m.required,
-                enabled: m.enabled,
-                priority: m.priority,
-            })
+        .map(|m| ModConfig {
+            spec: spec(m),
+            required: m.required,
+            enabled: m.enabled,
+            priority: m.priority,
         })
         .collect();
     data.profiles.insert(name.to_string(), ModProfile { mods });
@@ -352,23 +345,20 @@ mod tests {
         }
     }
 
-    fn local(id: u32, enabled: bool) -> ModOrGroup {
-        ModOrGroup::Individual(ModConfig {
+    fn local(id: u32, enabled: bool) -> ModConfig {
+        ModConfig {
             spec: ModSpecification::new(format!("https://mod.io/g/drg/m/mod-{id}#{id}")),
             required: false,
             enabled,
             priority: 0,
-        })
+        }
     }
 
     fn urls(d: &ModData, profile: &str) -> Vec<String> {
         d.profiles[profile]
             .mods
             .iter()
-            .map(|e| match e {
-                ModOrGroup::Individual(mc) => mc.spec.url.clone(),
-                ModOrGroup::Group { group_name, .. } => group_name.clone(),
-            })
+            .map(|mc| mc.spec.url.clone())
             .collect()
     }
 
@@ -417,7 +407,7 @@ mod tests {
                     mods: vec![local(2, true), local(1, true)],
                 },
             )]),
-            groups: BTreeMap::new(),
+            legacy_groups: BTreeMap::new(),
             sections: Vec::new(),
         };
         // remote: 1, 3 (new, after 1), 2 disabled; sections above 3 and 2
@@ -450,7 +440,7 @@ mod tests {
             d.profiles[profile]
                 .mods
                 .iter()
-                .map(|e| matches!(e, ModOrGroup::Individual(mc) if mc.enabled))
+                .map(|mc| mc.enabled)
                 .collect()
         };
         assert_eq!(enabled("copy"), [false, true, true]);

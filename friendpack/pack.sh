@@ -142,8 +142,6 @@ if wanted:
     if missing:
         sys.exit("unknown profile(s): %s (have: %s)" % (", ".join(missing), ", ".join(data["profiles"])))
     data["profiles"] = {p: data["profiles"][p] for p in wanted}
-    used = {m["group_name"] for p in data["profiles"].values() for m in p["mods"] if "group_name" in m}
-    data["groups"] = {g: m for g, m in data["groups"].items() if g in used}
     data["active_profile"] = wanted[0]
 print("profiles: %s (active: %s)" % (", ".join(data["profiles"]), data["active_profile"]))
 with open(dst, "w", encoding="utf-8", newline="\n") as f:

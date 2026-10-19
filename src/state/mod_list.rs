@@ -13,44 +13,31 @@
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
-use super::{
-    ModConfig, ModData_v0_1_0 as ModData, ModOrGroup, ModProfile_v0_1_0 as ModProfile, Section,
-};
+use super::{ModConfig, ModData_v0_1_0 as ModData, ModProfile_v0_1_0 as ModProfile, Section};
 use crate::providers::ModSpecification;
 
 /// Identifies an entry across profiles. mod.io mods are identified by mod ID (falling back to the
 /// slug), so the same mod pinned to different versions is still one entry.
-fn entry_key(entry: &ModOrGroup) -> String {
-    match entry {
-        ModOrGroup::Group { group_name, .. } => format!("group:{group_name}"),
-        ModOrGroup::Individual(mc) => {
-            let url = mc.spec.url.as_str();
-            match url.split_once("mod.io/g/drg/m/") {
-                Some((_, rest)) => {
-                    let (slug, fragment) = rest.split_once('#').unwrap_or((rest, ""));
-                    match fragment.split('/').next().filter(|id| !id.is_empty()) {
-                        Some(id) => format!("modio:{id}"),
-                        None => format!("modio:{}", slug.trim_end_matches('/')),
-                    }
-                }
-                None => url.to_string(),
+fn entry_key(mc: &ModConfig) -> String {
+    let url = mc.spec.url.as_str();
+    match url.split_once("mod.io/g/drg/m/") {
+        Some((_, rest)) => {
+            let (slug, fragment) = rest.split_once('#').unwrap_or((rest, ""));
+            match fragment.split('/').next().filter(|id| !id.is_empty()) {
+                Some(id) => format!("modio:{id}"),
+                None => format!("modio:{}", slug.trim_end_matches('/')),
             }
         }
+        None => url.to_string(),
     }
 }
 
-/// The same entry, switched off: how a mod shows up in profiles it wasn't enabled in.
-fn disabled(entry: &ModOrGroup) -> ModOrGroup {
-    match entry {
-        ModOrGroup::Group { group_name, .. } => ModOrGroup::Group {
-            group_name: group_name.clone(),
-            enabled: false,
-        },
-        ModOrGroup::Individual(mc) => ModOrGroup::Individual(ModConfig {
-            enabled: false,
-            required: false,
-            ..mc.clone()
-        }),
+/// The same mod, switched off: how a mod shows up in profiles it wasn't enabled in.
+fn disabled(mc: &ModConfig) -> ModConfig {
+    ModConfig {
+        enabled: false,
+        required: false,
+        ..mc.clone()
     }
 }
 
@@ -69,18 +56,15 @@ fn shift<T>(from: usize, to: usize, items: &mut [T]) {
 #[derive(Debug, Clone)]
 pub struct DeletedMod {
     index: usize,
-    entries: BTreeMap<String, ModOrGroup>,
+    entries: BTreeMap<String, ModConfig>,
     /// sections whose header sat directly above it
     sections: Vec<String>,
 }
 
 impl DeletedMod {
-    /// The deleted mod (`None` for a mod group).
+    /// The deleted mod.
     pub fn spec(&self) -> Option<&ModSpecification> {
-        match self.entries.values().next()? {
-            ModOrGroup::Individual(mc) => Some(&mc.spec),
-            ModOrGroup::Group { .. } => None,
-        }
+        self.entries.values().next().map(|mc| &mc.spec)
     }
 }
 
@@ -97,7 +81,7 @@ impl ModData {
         }
 
         let mut order: Vec<String> = Vec::new();
-        let mut canonical: HashMap<String, ModOrGroup> = HashMap::new();
+        let mut canonical: HashMap<String, ModConfig> = HashMap::new();
         for name in &names {
             let mut prev: Option<String> = None;
             for entry in &self.profiles[name].mods {
@@ -116,7 +100,7 @@ impl ModData {
 
         let mut changed = false;
         for profile in self.profiles.values_mut() {
-            let mut own: HashMap<String, ModOrGroup> = HashMap::new();
+            let mut own: HashMap<String, ModConfig> = HashMap::new();
             for entry in &profile.mods {
                 own.entry(entry_key(entry)).or_insert_with(|| entry.clone());
             }
@@ -124,16 +108,13 @@ impl ModData {
                 .iter()
                 .map(|key| {
                     let shared = &canonical[key];
-                    match (own.remove(key), shared) {
-                        (Some(ModOrGroup::Individual(mine)), ModOrGroup::Individual(shared)) => {
-                            ModOrGroup::Individual(ModConfig {
-                                spec: shared.spec.clone(),
-                                priority: shared.priority,
-                                ..mine
-                            })
-                        }
-                        (Some(mine), _) => mine,
-                        (None, shared) => disabled(shared),
+                    match own.remove(key) {
+                        Some(mine) => ModConfig {
+                            spec: shared.spec.clone(),
+                            priority: shared.priority,
+                            ..mine
+                        },
+                        None => disabled(shared),
                     }
                 })
                 .collect::<Vec<_>>();
@@ -153,21 +134,16 @@ impl ModData {
         if let Some(existing) = self.profiles[&active]
             .mods
             .iter()
-            .position(|m| matches!(m, ModOrGroup::Individual(existing) if existing.spec == mc.spec))
+            .position(|existing| existing.spec == mc.spec)
         {
-            if let ModOrGroup::Individual(existing) =
-                &mut self.profiles.get_mut(&active).unwrap().mods[existing]
-            {
-                existing.enabled = true;
-            }
+            self.profiles.get_mut(&active).unwrap().mods[existing].enabled = true;
             return;
         }
-        let entry = ModOrGroup::Individual(mc);
         for (name, profile) in self.profiles.iter_mut() {
             let e = if *name == active {
-                entry.clone()
+                mc.clone()
             } else {
-                disabled(&entry)
+                disabled(&mc)
             };
             profile.mods.insert(0, e);
         }
@@ -250,10 +226,8 @@ impl ModData {
     /// Enables or disables an entry in every profile.
     pub fn set_enabled_everywhere(&mut self, index: usize, enabled: bool) {
         for profile in self.profiles.values_mut() {
-            match profile.mods.get_mut(index) {
-                Some(ModOrGroup::Individual(mc)) => mc.enabled = enabled,
-                Some(ModOrGroup::Group { enabled: e, .. }) => *e = enabled,
-                None => {}
+            if let Some(mc) = profile.mods.get_mut(index) {
+                mc.enabled = enabled;
             }
         }
     }
@@ -268,12 +242,8 @@ impl ModData {
                 continue;
             }
             for (theirs, ours) in other.mods.iter_mut().zip(&source) {
-                if let (ModOrGroup::Individual(theirs), ModOrGroup::Individual(ours)) =
-                    (theirs, ours)
-                {
-                    theirs.spec = ours.spec.clone();
-                    theirs.priority = ours.priority;
-                }
+                theirs.spec = ours.spec.clone();
+                theirs.priority = ours.priority;
             }
         }
     }
@@ -367,7 +337,7 @@ impl ModData {
             .map(entry_key)
             .collect();
         for profile in self.profiles.values_mut() {
-            let mut old: Vec<Option<ModOrGroup>> = std::mem::take(&mut profile.mods)
+            let mut old: Vec<Option<ModConfig>> = std::mem::take(&mut profile.mods)
                 .into_iter()
                 .map(Some)
                 .collect();
@@ -496,23 +466,23 @@ impl ModData {
 mod tests {
     use super::*;
 
-    fn m(url: &str, enabled: bool) -> ModOrGroup {
-        ModOrGroup::Individual(ModConfig {
+    fn m(url: &str, enabled: bool) -> ModConfig {
+        ModConfig {
             spec: ModSpecification::new(url.to_string()),
             required: false,
             enabled,
             priority: 0,
-        })
+        }
     }
 
-    fn data(active: &str, profiles: &[(&str, Vec<ModOrGroup>)]) -> ModData {
+    fn data(active: &str, profiles: &[(&str, Vec<ModConfig>)]) -> ModData {
         ModData {
             active_profile: active.to_string(),
             profiles: profiles
                 .iter()
                 .map(|(n, mods)| (n.to_string(), ModProfile { mods: mods.clone() }))
                 .collect(),
-            groups: BTreeMap::new(),
+            legacy_groups: BTreeMap::new(),
             sections: Vec::new(),
         }
     }
@@ -521,10 +491,7 @@ mod tests {
         d.profiles[profile]
             .mods
             .iter()
-            .map(|e| match e {
-                ModOrGroup::Individual(mc) => mc.spec.url.clone(),
-                ModOrGroup::Group { group_name, .. } => group_name.clone(),
-            })
+            .map(|mc| mc.spec.url.clone())
             .collect()
     }
 
@@ -532,10 +499,7 @@ mod tests {
         d.profiles[profile]
             .mods
             .iter()
-            .map(|e| match e {
-                ModOrGroup::Individual(mc) => mc.enabled,
-                ModOrGroup::Group { enabled, .. } => *enabled,
-            })
+            .map(|mc| mc.enabled)
             .collect()
     }
 
@@ -692,14 +656,11 @@ mod tests {
             "a",
             &[("a", vec![m("x", true)]), ("b", vec![m("x", false)])],
         );
-        if let ModOrGroup::Individual(mc) = &mut d.profiles.get_mut("a").unwrap().mods[0] {
-            mc.spec = ModSpecification::new("x#v2".into());
-            mc.priority = 5;
-        }
+        let mc = &mut d.profiles.get_mut("a").unwrap().mods[0];
+        mc.spec = ModSpecification::new("x#v2".into());
+        mc.priority = 5;
         d.sync_shared_fields("a");
-        let ModOrGroup::Individual(b) = &d.profiles["b"].mods[0] else {
-            unreachable!()
-        };
+        let b = &d.profiles["b"].mods[0];
         assert_eq!(
             (b.spec.url.as_str(), b.priority, b.enabled),
             ("x#v2", 5, false)

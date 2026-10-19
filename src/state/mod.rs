@@ -41,11 +41,6 @@ fn is_zero(value: &i32) -> bool {
     *value == 0
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ModGroup {
-    pub mods: Vec<ModConfig>,
-}
-
 #[obake::versioned]
 #[obake(version("0.0.0"))]
 #[obake(version("0.1.0"))]
@@ -54,16 +49,38 @@ pub struct ModProfile {
     #[obake(cfg("0.0.0"))]
     pub mods: Vec<ModConfig>,
 
-    /// A profile can contain ordered individual mods mixed with mod groups.
     #[obake(cfg("0.1.0"))]
-    pub mods: Vec<ModOrGroup>,
+    #[serde(deserialize_with = "without_groups")]
+    pub mods: Vec<ModConfig>,
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ModOrGroup {
-    Group { group_name: String, enabled: bool },
-    Individual(ModConfig),
+/// Version 0.1.0 profiles could also list mod groups, which mint never got a UI for. Those
+/// entries are dropped.
+fn without_groups<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<ModConfig>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Entry {
+        Mod(ModConfig),
+        Group {
+            #[allow(dead_code)]
+            group_name: String,
+        },
+    }
+    let entries = Vec::<Entry>::deserialize(d)?;
+    let dropped = entries
+        .iter()
+        .filter(|e| matches!(e, Entry::Group { .. }))
+        .count();
+    if dropped > 0 {
+        tracing::warn!("dropped {dropped} mod group entries from a profile");
+    }
+    Ok(entries
+        .into_iter()
+        .filter_map(|e| match e {
+            Entry::Mod(mc) => Some(mc),
+            Entry::Group { .. } => None,
+        })
+        .collect())
 }
 
 impl From<ModProfile!["0.0.0"]> for ModProfile!["0.1.0"] {
@@ -83,8 +100,11 @@ pub struct ModData {
     pub profiles: BTreeMap<String, ModProfile!["0.0.0"]>,
     #[obake(cfg("0.1.0"))]
     pub profiles: BTreeMap<String, ModProfile!["0.1.0"]>,
+    /// Unused (mod groups were never finished). Older mint builds refuse files without it, so
+    /// whatever is there is kept.
     #[obake(cfg("0.1.0"))]
-    pub groups: BTreeMap<String, ModGroup>,
+    #[serde(default, rename = "groups")]
+    pub legacy_groups: BTreeMap<String, serde_json::Value>,
     /// Section headers in the mod list, top to bottom; the same in every profile.
     #[obake(cfg("0.1.0"))]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -102,137 +122,29 @@ pub struct Section {
 }
 
 impl ModData!["0.1.0"] {
-    pub fn for_each_mod_predicate<
-        F: FnMut(&ModConfig),
-        G: FnMut(bool /* mod group enabled? */) -> bool,
-        P: FnMut(&ModConfig) -> bool,
-    >(
-        &self,
-        profile: &str,
-        mut f: F,
-        mut g: G,
-        mut p: P,
-    ) {
-        for ref mod_or_group in &self.profiles.get(profile).unwrap().mods {
-            match mod_or_group {
-                ModOrGroup::Group {
-                    group_name,
-                    enabled,
-                } => {
-                    if g(*enabled) {
-                        for mc in &self.groups.get(group_name).unwrap().mods {
-                            if p(mc) {
-                                f(mc);
-                            }
-                        }
-                    }
-                }
-                ModOrGroup::Individual(mc) => {
-                    if p(mc) {
-                        f(mc);
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn for_each_mod_predicate_mut<
-        F: FnMut(&mut ModConfig),
-        G: FnMut(bool /* mod group enabled? */) -> bool,
-        P: FnMut(&mut ModConfig) -> bool,
-    >(
-        &mut self,
-        profile: &str,
-        mut f: F,
-        mut g: G,
-        mut p: P,
-    ) {
-        for ref mut mod_or_group in &mut self.profiles.get_mut(profile).unwrap().mods {
-            match mod_or_group {
-                ModOrGroup::Group {
-                    group_name,
-                    enabled,
-                } => {
-                    if g(*enabled) {
-                        for mc in &mut self.groups.get_mut(group_name).unwrap().mods {
-                            if p(mc) {
-                                f(mc);
-                            }
-                        }
-                    }
-                }
-                ModOrGroup::Individual(mc) => {
-                    if p(mc) {
-                        f(mc);
-                    }
-                }
-            }
-        }
-    }
-
     pub fn for_each_mod<F: FnMut(&ModConfig)>(&self, profile: &str, f: F) {
-        self.for_each_mod_predicate(profile, f, |_| true, |_| true)
+        self.profiles[profile].mods.iter().for_each(f)
     }
 
     pub fn for_each_enabled_mod<F: FnMut(&ModConfig)>(&self, profile: &str, f: F) {
-        self.for_each_mod_predicate(profile, f, std::convert::identity, |mc| mc.enabled)
+        self.profiles[profile]
+            .mods
+            .iter()
+            .filter(|mc| mc.enabled)
+            .for_each(f)
     }
 
-    pub fn for_each_mod_mut<F: FnMut(&mut ModConfig)>(&mut self, profile: &str, f: F) {
-        self.for_each_mod_predicate_mut(profile, f, |_| true, |_| true)
+    pub fn any_mod<F: FnMut(&ModConfig) -> bool>(&self, profile: &str, f: F) -> bool {
+        self.profiles[profile].mods.iter().any(f)
     }
 
-    pub fn any_mod<F: FnMut(&ModConfig, Option<bool> /* mod group enabled? */) -> bool>(
-        &self,
-        profile: &str,
-        mut f: F,
-    ) -> bool {
-        self.profiles.get(profile).unwrap().mods.iter().any(|m| {
-            let f = &mut f;
-            match m {
-                ModOrGroup::Individual(mc) => f(mc, None),
-                ModOrGroup::Group {
-                    group_name,
-                    enabled,
-                } => self
-                    .groups
-                    .get(group_name)
-                    .unwrap()
-                    .mods
-                    .iter()
-                    .any(|mc| f(mc, Some(*enabled))),
-            }
-        })
-    }
-
-    pub fn any_mod_mut<
-        F: FnMut(&mut ModConfig, Option<&mut bool> /* mod group enabled? */) -> bool,
-    >(
-        &mut self,
-        profile: &str,
-        mut f: F,
-    ) -> bool {
+    pub fn any_mod_mut<F: FnMut(&mut ModConfig) -> bool>(&mut self, profile: &str, f: F) -> bool {
         self.profiles
             .get_mut(profile)
             .unwrap()
             .mods
             .iter_mut()
-            .any(|m| {
-                let f = &mut f;
-                match m {
-                    ModOrGroup::Individual(mc) => f(mc, None),
-                    ModOrGroup::Group {
-                        group_name,
-                        enabled,
-                    } => self
-                        .groups
-                        .get_mut(group_name)
-                        .unwrap()
-                        .mods
-                        .iter_mut()
-                        .any(|mc| f(mc, Some(enabled))),
-                }
-            })
+            .any(f)
     }
 }
 
@@ -243,9 +155,7 @@ impl Default for ModData!["0.1.0"] {
             profiles: [("default".to_string(), Default::default())]
                 .into_iter()
                 .collect(),
-            groups: [("default".to_string(), Default::default())]
-                .into_iter()
-                .collect(),
+            legacy_groups: BTreeMap::new(),
             sections: Vec::new(),
         }
     }
@@ -255,20 +165,14 @@ impl From<ModData!["0.0.0"]> for ModData!["0.1.0"] {
     fn from(legacy: ModData!["0.0.0"]) -> Self {
         let mut new_profiles = Vec::new();
         for (name, profile) in legacy.profiles {
-            let new_profile = ModProfile_v0_1_0 {
-                mods: profile
-                    .mods
-                    .into_iter()
-                    .map(ModOrGroup::Individual)
-                    .collect(),
-            };
+            let new_profile = ModProfile_v0_1_0 { mods: profile.mods };
             new_profiles.push((name, new_profile));
         }
 
         Self {
             active_profile: legacy.active_profile,
             profiles: new_profiles.into_iter().collect(),
-            groups: BTreeMap::default(),
+            legacy_groups: BTreeMap::new(),
             sections: Vec::new(),
         }
     }
@@ -586,171 +490,22 @@ fn read_mod_data_or_default(
 
 #[cfg(test)]
 mod mod_data_tests {
-    use super::{
-        ModConfig, ModData_v0_1_0 as ModData, ModGroup, ModOrGroup, ModProfile_v0_1_0 as ModProfile,
-    };
-    use crate::providers::ModSpecification;
+    use super::{ModData_v0_1_0 as ModData, VersionAnnotatedModData};
 
     #[test]
-    fn test_for_each_mod() {
-        let mod_1 = ModConfig {
-            spec: ModSpecification::new("a".to_string()),
-            required: false,
-            enabled: false,
-            priority: 50,
+    fn group_entries_are_dropped_and_the_groups_key_is_kept() {
+        let json = r#"{"version":"0.1.0","active_profile":"a","profiles":{"a":{"mods":[
+            {"spec":{"url":"https://mod.io/g/drg/m/x#1"},"required":false,"enabled":true},
+            {"group_name":"g","enabled":true}
+        ]}},"groups":{"g":{"mods":[]}}}"#;
+        let data: VersionAnnotatedModData = serde_json::from_str(json).unwrap();
+        let VersionAnnotatedModData::V0_1_0(data) = data else {
+            panic!("wrong version");
         };
-
-        let mod_2 = ModConfig {
-            spec: ModSpecification::new("b".to_string()),
-            required: true,
-            enabled: false,
-            priority: 50,
-        };
-
-        let mod_3 = ModConfig {
-            spec: ModSpecification::new("c".to_string()),
-            required: false,
-            enabled: true,
-            priority: 50,
-        };
-
-        let mod_data = ModData {
-            active_profile: "default".to_string(),
-            profiles: [(
-                "default".to_string(),
-                ModProfile {
-                    mods: vec![
-                        ModOrGroup::Individual(mod_1),
-                        ModOrGroup::Group {
-                            group_name: "mg1".to_string(),
-                            enabled: false,
-                        },
-                    ],
-                },
-            )]
-            .into(),
-            groups: [(
-                "mg1".to_string(),
-                ModGroup {
-                    mods: vec![mod_2, mod_3],
-                },
-            )]
-            .into(),
-            sections: Vec::new(),
-        };
-
-        let mut counter = 0;
-        mod_data.for_each_mod("default", |_| {
-            counter += 1;
-        });
-        assert_eq!(counter, 3);
-    }
-
-    #[test]
-    fn test_for_each_enabled_mod() {
-        let mod_1 = ModConfig {
-            spec: ModSpecification::new("a".to_string()),
-            required: false,
-            enabled: false,
-            priority: 50,
-        };
-
-        let mod_2 = ModConfig {
-            spec: ModSpecification::new("b".to_string()),
-            required: true,
-            enabled: false,
-            priority: 50,
-        };
-
-        let mod_3 = ModConfig {
-            spec: ModSpecification::new("c".to_string()),
-            required: false,
-            enabled: true,
-            priority: 50,
-        };
-
-        let mod_data = ModData {
-            active_profile: "default".to_string(),
-            profiles: [(
-                "default".to_string(),
-                ModProfile {
-                    mods: vec![
-                        ModOrGroup::Individual(mod_1),
-                        ModOrGroup::Group {
-                            group_name: "mg1".to_string(),
-                            enabled: true,
-                        },
-                    ],
-                },
-            )]
-            .into(),
-            groups: [(
-                "mg1".to_string(),
-                ModGroup {
-                    mods: vec![mod_2, mod_3],
-                },
-            )]
-            .into(),
-            sections: Vec::new(),
-        };
-
-        let mut counter = 0;
-        mod_data.for_each_enabled_mod("default", |_| {
-            counter += 1;
-        });
-        assert_eq!(counter, 1);
-    }
-
-    #[test]
-    fn test_any_mod() {
-        let mod_1 = ModConfig {
-            spec: ModSpecification::new("a".to_string()),
-            required: false,
-            enabled: false,
-            priority: 50,
-        };
-
-        let mod_2 = ModConfig {
-            spec: ModSpecification::new("b".to_string()),
-            required: true,
-            enabled: false,
-            priority: 50,
-        };
-
-        let mod_3 = ModConfig {
-            spec: ModSpecification::new("c".to_string()),
-            required: false,
-            enabled: true,
-            priority: 50,
-        };
-
-        let mod_data = ModData {
-            active_profile: "default".to_string(),
-            profiles: [(
-                "default".to_string(),
-                ModProfile {
-                    mods: vec![
-                        ModOrGroup::Individual(mod_1),
-                        ModOrGroup::Group {
-                            group_name: "mg1".to_string(),
-                            enabled: true,
-                        },
-                    ],
-                },
-            )]
-            .into(),
-            groups: [(
-                "mg1".to_string(),
-                ModGroup {
-                    mods: vec![mod_2, mod_3],
-                },
-            )]
-            .into(),
-            sections: Vec::new(),
-        };
-
-        let any_required = mod_data.any_mod("default", |mc, _| mc.required);
-        assert!(any_required);
+        let data: ModData = data;
+        assert_eq!(data.profiles["a"].mods.len(), 1);
+        let out = serde_json::to_value(&data).unwrap();
+        assert_eq!(out["groups"], serde_json::json!({"g": {"mods": []}}));
     }
 
     #[test]

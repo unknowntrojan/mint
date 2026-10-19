@@ -54,7 +54,7 @@ use crate::{
     providers::{
         ApprovalStatus, FetchProgress, ModInfo, ModSpecification, ModStore, ProviderFactory,
     },
-    state::{ModConfig, ModData_v0_1_0 as ModData, ModOrGroup, ModProfile, State},
+    state::{ModConfig, ModData_v0_1_0 as ModData, ModProfile, State},
 };
 use message::MessageHandle;
 use request_counter::{RequestCounter, RequestID};
@@ -237,15 +237,15 @@ fn ui_remote(
     ui.add_space(4.);
 
     // mods grouped under their section headers; mods above the first header have none
-    let mut groups: Vec<(Option<&str>, Vec<&PresetMod>)> = vec![(None, Vec::new())];
+    let mut blocks: Vec<(Option<&str>, Vec<&PresetMod>)> = vec![(None, Vec::new())];
     let mut headers = preset.sections.iter().peekable();
     for m in &preset.mods {
         while let Some(section) = headers.next_if(|s| s.before == Some(m.mod_id)) {
-            groups.push((Some(section.name.as_str()), Vec::new()));
+            blocks.push((Some(section.name.as_str()), Vec::new()));
         }
-        groups.last_mut().unwrap().1.push(m);
+        blocks.last_mut().unwrap().1.push(m);
     }
-    groups.extend(headers.map(|s| (Some(s.name.as_str()), Vec::new())));
+    blocks.extend(headers.map(|s| (Some(s.name.as_str()), Vec::new())));
 
     let row = |ui: &mut Ui, m: &PresetMod, scroll_to_match: &mut bool| {
         ui.horizontal(|ui| {
@@ -283,7 +283,7 @@ fn ui_remote(
     egui::ScrollArea::vertical()
         .auto_shrink(false)
         .show(ui, |ui| {
-            for (i, (name, mods)) in groups.iter().enumerate() {
+            for (i, (name, mods)) in blocks.iter().enumerate() {
                 match name {
                     None => mods.iter().for_each(|m| row(ui, m, scroll_to_match)),
                     Some(name) => {
@@ -334,18 +334,8 @@ impl egui_dnd::DragDropItem for RowItem {
     }
 }
 
-fn entry_id(entry: &ModOrGroup) -> egui::Id {
-    match entry {
-        ModOrGroup::Individual(mc) => egui::Id::new(("mod", &mc.spec.url)),
-        ModOrGroup::Group { group_name, .. } => egui::Id::new(("group", group_name)),
-    }
-}
-
-fn is_enabled(entry: &ModOrGroup) -> bool {
-    match entry {
-        ModOrGroup::Individual(mc) => mc.enabled,
-        ModOrGroup::Group { enabled, .. } => *enabled,
-    }
+fn entry_id(mc: &ModConfig) -> egui::Id {
+    egui::Id::new(("mod", &mc.spec.url))
 }
 
 fn section_menu(ui: &mut Ui, s: usize, sections: usize) -> Option<SectionOp> {
@@ -510,10 +500,7 @@ impl App {
         let renaming = &mut self.renaming_section;
 
         let ModData {
-            profiles,
-            groups,
-            sections,
-            ..
+            profiles, sections, ..
         } = self.state.mod_data.deref_mut().deref_mut();
 
         struct Ctx {
@@ -542,27 +529,8 @@ impl App {
                 .mods
                 .iter()
                 .enumerate()
-                .flat_map(|(i, m)| -> Box<dyn Iterator<Item = _>> {
-                    match m {
-                        ModOrGroup::Individual(mc) => {
-                            Box::new(mc.enabled.then_some((Some(i), mc.spec.clone())).into_iter())
-                        }
-                        ModOrGroup::Group {
-                            group_name,
-                            enabled,
-                        } => Box::new(
-                            enabled
-                                .then(|| groups.get(group_name))
-                                .flatten()
-                                .into_iter()
-                                .flat_map(|g| {
-                                    g.mods
-                                        .iter()
-                                        .filter_map(|m| m.enabled.then_some((None, m.spec.clone())))
-                                }),
-                        ),
-                    }
-                })
+                .filter(|(_, mc)| mc.enabled)
+                .map(|(i, mc)| (i, mc.spec.clone()))
                 .collect::<Vec<_>>();
 
             let ui_mod_tags = |ctx: &mut Ctx, ui: &mut Ui, info: &ModInfo| {
@@ -691,11 +659,7 @@ impl App {
                 }
             };
 
-            let mut ui_mod = |ctx: &mut Ctx,
-                              ui: &mut Ui,
-                              group: Option<&str>,
-                              row_index: usize,
-                              mc: &mut ModConfig| {
+            let mut ui_mod = |ctx: &mut Ctx, ui: &mut Ui, row_index: usize, mc: &mut ModConfig| {
                 if !mc.enabled {
                     let vis = ui.visuals_mut();
                     vis.override_text_color = Some(vis.text_color());
@@ -708,8 +672,7 @@ impl App {
                     .changed()
                 {
                     ctx.needs_save = true;
-                    // mods inside a group are shared by all profiles already
-                    if group.is_none() && ui.input(|i| i.modifiers.shift) {
+                    if ui.input(|i| i.modifiers.shift) {
                         ctx.toggle_everywhere = Some((row_index, mc.enabled));
                     }
                 }
@@ -830,7 +793,7 @@ impl App {
 
                     if mc.enabled {
                         let is_duplicate = enabled_specs.iter().any(|(i, spec)| {
-                            Some(row_index) != *i && info.spec.satisfies_dependency(spec)
+                            *i != row_index && info.spec.satisfies_dependency(spec)
                         });
                         if is_duplicate
                             && ui
@@ -915,13 +878,11 @@ impl App {
                         res.scroll_to_me(None);
                         ctx.scroll_to_match = false;
                     }
-                    if group.is_none() {
-                        res.context_menu(|ui| {
-                            if let Some(op) = mod_menu(ui, row_index, &section_names) {
-                                ctx.section_op = Some(op);
-                            }
-                        });
-                    }
+                    res.context_menu(|ui| {
+                        if let Some(op) = mod_menu(ui, row_index, &section_names) {
+                            ctx.section_op = Some(op);
+                        }
+                    });
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         // tags are disabled buttons; egui fades those with alpha since 0.32, which
@@ -950,20 +911,15 @@ impl App {
                         res.scroll_to_me(None);
                         ctx.scroll_to_match = false;
                     }
-                    if group.is_none() {
-                        res.context_menu(|ui| {
-                            if let Some(op) = mod_menu(ui, row_index, &section_names) {
-                                ctx.section_op = Some(op);
-                            }
-                        });
-                    }
+                    res.context_menu(|ui| {
+                        if let Some(op) = mod_menu(ui, row_index, &section_names) {
+                            ctx.section_op = Some(op);
+                        }
+                    });
                 }
             };
 
-            let mut ui_item = |ctx: &mut Ctx,
-                               ui: &mut Ui,
-                               mc: &mut ModOrGroup,
-                               row_index: usize| {
+            let mut ui_item = |ctx: &mut Ctx, ui: &mut Ui, mc: &mut ModConfig, row_index: usize| {
                 ui.scope(|ui| {
                     ui.visuals_mut().widgets.hovered.weak_bg_fill = colors::DARK_RED;
                     ui.visuals_mut().widgets.active.weak_bg_fill = colors::DARKER_RED;
@@ -976,37 +932,7 @@ impl App {
                     };
                 });
 
-                match mc {
-                    ModOrGroup::Individual(mc) => {
-                        ui_mod(ctx, ui, None, row_index, mc);
-                    }
-                    ModOrGroup::Group {
-                        group_name,
-                        enabled,
-                    } => {
-                        if ui
-                            .add(toggle_switch(enabled))
-                            .on_hover_text_at_pointer("Enabled?\nShift+click: set in all presets")
-                            .changed()
-                        {
-                            ctx.needs_save = true;
-                            if ui.input(|i| i.modifiers.shift) {
-                                ctx.toggle_everywhere = Some((row_index, *enabled));
-                            }
-                        }
-                        ui.collapsing(group_name.as_str(), |ui| {
-                            for (index, m) in groups
-                                .get_mut(group_name)
-                                .unwrap()
-                                .mods
-                                .iter_mut()
-                                .enumerate()
-                            {
-                                ui.horizontal(|ui| ui_mod(ctx, ui, Some(group_name), index, m));
-                            }
-                        });
-                    }
-                }
+                ui_mod(ctx, ui, row_index, mc);
             };
 
             if let Some(sorting_config) = sorting_config {
@@ -1014,13 +940,10 @@ impl App {
                 profile
                     .mods
                     .iter_mut()
-                    .map(|m| {
+                    .map(|mc| {
                         // fetch ModInfo up front because doing it in the comparator is slow
-                        let ModOrGroup::Individual(mc) = m else {
-                            unimplemented!("Item is not Individual \n{:?}", m);
-                        };
                         let info = self.state.store.get_mod_info(&mc.spec);
-                        (m, info)
+                        (mc, info)
                     })
                     .enumerate()
                     .sorted_by(|a, b| comp((a.1.0, a.1.1.as_ref()), (b.1.0, b.1.1.as_ref())))
@@ -1052,15 +975,13 @@ impl App {
                             };
                             section_of[r] = Some(s);
                             counts[s].1 += 1;
-                            counts[s].0 += is_enabled(entry) as usize;
-                            if !search.is_empty()
-                                && let ModOrGroup::Individual(mc) = entry
-                            {
+                            counts[s].0 += entry.enabled as usize;
+                            if !search.is_empty() {
                                 let name = self
                                     .state
                                     .store
-                                    .get_mod_info(&mc.spec)
-                                    .map_or_else(|| mc.spec.url.clone(), |i| i.name);
+                                    .get_mod_info(&entry.spec)
+                                    .map_or_else(|| entry.spec.url.clone(), |i| i.name);
                                 has_match[s] |= name.to_lowercase().contains(&search);
                             }
                         }
@@ -2098,22 +2019,9 @@ impl App {
     }
 }
 
-type ModListEntry<'a> = (&'a ModOrGroup, Option<&'a ModInfo>);
+type ModListEntry<'a> = (&'a ModConfig, Option<&'a ModInfo>);
 fn sort_mods(config: SortingConfig) -> impl Fn(ModListEntry, ModListEntry) -> Ordering {
-    move |(a, info_a), (b, info_b)| {
-        if matches!(a, ModOrGroup::Group { .. }) || matches!(b, ModOrGroup::Group { .. }) {
-            unimplemented!("Groups in sorting not implemented");
-        }
-
-        let ModOrGroup::Individual(mc_a) = a else {
-            debug!("Item is not Individual \n{:?}", a);
-            return Ordering::Equal;
-        };
-        let ModOrGroup::Individual(mc_b) = b else {
-            debug!("Item is not Individual \n{:?}", b);
-            return Ordering::Equal;
-        };
-
+    move |(mc_a, info_a), (mc_b, info_b)| {
         fn map_cmp<V, M, F>(a: &V, b: &V, map: F) -> Ordering
         where
             M: Ord,
@@ -2692,10 +2600,9 @@ impl eframe::App for App {
                 }
 
                 ui.add_space(16.);
-                // TODO: actually implement mod groups.
                 let search_string = &mut self.search_string;
                 let lower = search_string.to_lowercase();
-                let any_matches = self.state.mod_data.any_mod(&profile, |mc, _| {
+                let any_matches = self.state.mod_data.any_mod(&profile, |mc| {
                     self.state
                         .store
                         .get_mod_info(&mc.spec)

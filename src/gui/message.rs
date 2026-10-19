@@ -123,20 +123,14 @@ impl ResolveMods {
                             // is not a dependency then assume the user explicitly
                             // wants to add a specific mod version.
                             let active_profile = app.state.mod_data.active_profile.clone();
-                            !app.state.mod_data.any_mod_mut(
-                                &active_profile,
-                                |mc, mod_group_enabled| {
-                                    if mc.spec.satisfies_dependency(&resolved_spec) {
-                                        mc.enabled = true;
-                                        if let Some(mod_group_enabled) = mod_group_enabled {
-                                            *mod_group_enabled = true;
-                                        }
-                                        true
-                                    } else {
-                                        false
-                                    }
-                                },
-                            )
+                            !app.state.mod_data.any_mod_mut(&active_profile, |mc| {
+                                if mc.spec.satisfies_dependency(&resolved_spec) {
+                                    mc.enabled = true;
+                                    true
+                                } else {
+                                    false
+                                }
+                            })
                         } else {
                             true
                         };

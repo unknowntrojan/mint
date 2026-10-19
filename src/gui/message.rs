@@ -1,15 +1,13 @@
 use std::collections::BTreeSet;
-use std::time::SystemTime;
 use std::{collections::HashMap, sync::Arc};
 
-use snafu::prelude::*;
 use tokio::{
     sync::mpsc::{self, Sender},
     task::JoinHandle,
 };
 use tracing::*;
 
-use super::SelfUpdateProgress;
+use super::UpdateState;
 use super::{
     App, SpecFetchProgress, WindowProviderParameters,
     request_counter::{RequestCounter, RequestID},
@@ -18,14 +16,13 @@ use crate::gui::LastAction;
 use crate::integrate::*;
 use crate::mod_lints::{LintId, LintReport};
 use crate::remote::{self, RemotePresets};
+use crate::update;
 use crate::*;
 use crate::{
     providers::{FetchProgress, ModInfo, ModStore},
     state::ModConfig,
 };
-use mint_lib::error::GenericError;
 use mint_lib::mod_info::MetaConfig;
-use mint_lib::update::GitHubRelease;
 use remote_preset::Preset;
 
 #[derive(Debug)]
@@ -41,10 +38,9 @@ pub enum Message {
     Integrate(Integrate),
     FetchModProgress(FetchModProgress),
     UpdateCache(UpdateCache),
-    CheckUpdates(CheckUpdates),
     LintMods(Box<LintMods>),
-    SelfUpdate(SelfUpdate),
-    FetchSelfUpdateProgress(FetchSelfUpdateProgress),
+    Update(Update),
+    UpdateProgress(UpdateProgress),
     FetchRemotePresets(FetchRemotePresets),
     PublishPreset(PublishPreset),
     UnpublishPreset(UnpublishPreset),
@@ -57,10 +53,9 @@ impl Message {
             Self::Integrate(msg) => msg.receive(app),
             Self::FetchModProgress(msg) => msg.receive(app),
             Self::UpdateCache(msg) => msg.receive(app),
-            Self::CheckUpdates(msg) => msg.receive(app),
             Self::LintMods(msg) => msg.receive(app),
-            Self::SelfUpdate(msg) => msg.receive(app),
-            Self::FetchSelfUpdateProgress(msg) => msg.receive(app),
+            Self::Update(msg) => msg.receive(app),
+            Self::UpdateProgress(msg) => msg.receive(app),
             Self::FetchRemotePresets(msg) => msg.receive(app),
             Self::PublishPreset(msg) => msg.receive(app),
             Self::UnpublishPreset(msg) => msg.receive(app),
@@ -291,57 +286,6 @@ impl UpdateCache {
     }
 }
 
-#[derive(Debug)]
-pub struct CheckUpdates {
-    rid: RequestID,
-    result: Result<GitHubRelease, GenericError>,
-}
-
-impl CheckUpdates {
-    pub fn send(app: &mut App, ctx: &egui::Context) {
-        let rid = app.request_counter.next();
-        let tx = app.tx.clone();
-        let ctx = ctx.clone();
-
-        let handle = tokio::spawn(async move {
-            tx.send(Message::CheckUpdates(Self {
-                rid,
-                result: mint_lib::update::get_latest_release().await,
-            }))
-            .await
-            .unwrap();
-            ctx.request_repaint();
-        });
-        app.check_updates_rid = Some(MessageHandle {
-            rid,
-            handle,
-            state: (),
-        });
-    }
-
-    fn receive(self, app: &mut App) {
-        if Some(self.rid) == app.check_updates_rid.as_ref().map(|r| r.rid) {
-            app.check_updates_rid = None;
-            match self.result {
-                Ok(release) => {
-                    if let (Ok(version), Some(Ok(release_version))) = (
-                        semver::Version::parse(env!("CARGO_PKG_VERSION")),
-                        release
-                            .tag_name
-                            .strip_prefix('v')
-                            .map(semver::Version::parse),
-                    ) && release_version > version
-                    {
-                        app.available_update = Some(release);
-                        app.show_update_time = Some(SystemTime::now());
-                    }
-                }
-                Err(e) => tracing::warn!("failed to fetch update {e}"),
-            }
-        }
-    }
-}
-
 async fn integrate_async(
     store: Arc<ModStore>,
     ctx: egui::Context,
@@ -531,203 +475,6 @@ async fn resolve_async_ordered(
 }
 
 #[derive(Debug)]
-pub struct SelfUpdate {
-    rid: RequestID,
-    result: Result<PathBuf, IntegrationError>,
-}
-
-impl SelfUpdate {
-    pub fn send(
-        rc: &mut RequestCounter,
-        tx: Sender<Message>,
-        ctx: egui::Context,
-    ) -> MessageHandle<SelfUpdateProgress> {
-        let rid = rc.next();
-        MessageHandle {
-            rid,
-            handle: tokio::task::spawn(async move {
-                let result = self_update_async(ctx.clone(), rid, tx.clone()).await;
-                tx.send(Message::SelfUpdate(SelfUpdate { rid, result }))
-                    .await
-                    .unwrap();
-                ctx.request_repaint();
-            }),
-            state: SelfUpdateProgress::Pending,
-        }
-    }
-
-    fn receive(self, app: &mut App) {
-        if Some(self.rid) == app.self_update_rid.as_ref().map(|r| r.rid) {
-            match self.result {
-                Ok(original_exe_path) => {
-                    info!("self update complete");
-                    app.original_exe_path = Some(original_exe_path);
-                    app.last_action = Some(LastAction::success("self update complete".to_string()));
-                }
-                Err(e) => {
-                    error!("self update failed");
-                    error!("{:#?}", e);
-                    app.self_update_rid = None;
-                    app.last_action = Some(LastAction::failure("self update failed".to_string()));
-                }
-            }
-            app.integrate_rid = None;
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct FetchSelfUpdateProgress {
-    rid: RequestID,
-    progress: SelfUpdateProgress,
-}
-
-impl FetchSelfUpdateProgress {
-    fn receive(self, app: &mut App) {
-        if let Some(MessageHandle { rid, state, .. }) = &mut app.self_update_rid
-            && *rid == self.rid
-        {
-            *state = self.progress;
-        }
-    }
-}
-
-async fn self_update_async(
-    ctx: egui::Context,
-    rid: RequestID,
-    message_tx: Sender<Message>,
-) -> Result<PathBuf, IntegrationError> {
-    use futures::stream::TryStreamExt;
-    use tokio::io::AsyncWriteExt;
-
-    let (tx, mut rx) = mpsc::channel::<SelfUpdateProgress>(1);
-
-    tokio::spawn(async move {
-        while let Some(progress) = rx.recv().await {
-            message_tx
-                .send(Message::FetchSelfUpdateProgress(FetchSelfUpdateProgress {
-                    rid,
-                    progress,
-                }))
-                .await
-                .unwrap();
-            ctx.request_repaint();
-        }
-    });
-
-    let client = reqwest::Client::new();
-
-    let asset_name = if cfg!(target_os = "windows") {
-        "mint-x86_64-pc-windows-msvc.zip"
-    } else if cfg!(target_os = "linux") {
-        "mint-x86_64-unknown-linux-gnu.zip"
-    } else {
-        unimplemented!("unsupported platform");
-    };
-
-    info!("downloading update");
-
-    let response = client
-        .get(format!(
-            "https://github.com/{}/releases/latest/download/{asset_name}",
-            mint_lib::update::GITHUB_REPO
-        ))
-        .send()
-        .await
-        .map_err(Into::into)
-        .with_context(|_| SelfUpdateFailedSnafu)?
-        .error_for_status()
-        .map_err(Into::into)
-        .with_context(|_| SelfUpdateFailedSnafu)?;
-    let size = response.content_length();
-    debug!(?response);
-    debug!(?size);
-
-    let tmp_dir = tempfile::Builder::new()
-        .prefix("self_update")
-        .tempdir_in(std::env::current_dir()?)?;
-    let tmp_archive_path = tmp_dir.path().join(asset_name);
-    let mut tmp_archive = tokio::fs::File::create(&tmp_archive_path)
-        .await
-        .map_err(Into::into)
-        .with_context(|_| SelfUpdateFailedSnafu)?;
-    let mut stream = response.bytes_stream();
-
-    let mut total_bytes_written = 0;
-    while let Some(bytes) = stream
-        .try_next()
-        .await
-        .map_err(Into::into)
-        .with_context(|_| SelfUpdateFailedSnafu)?
-    {
-        tmp_archive.write_all(&bytes).await?;
-        total_bytes_written += bytes.len();
-        if let Some(size) = size {
-            tx.send(SelfUpdateProgress::Progress {
-                progress: total_bytes_written as u64,
-                size,
-            })
-            .await
-            .unwrap();
-        }
-    }
-    tmp_archive.flush().await?;
-
-    debug!(?tmp_dir);
-    debug!(?tmp_archive_path);
-    debug!(?tmp_archive);
-
-    let original_exe_path =
-        tokio::task::spawn_blocking(move || -> Result<PathBuf, IntegrationError> {
-            let bin_name = if cfg!(target_os = "windows") {
-                "mint.exe"
-            } else if cfg!(target_os = "linux") {
-                "mint"
-            } else {
-                unimplemented!("unsupported platform");
-            };
-
-            info!("extracting downloaded update archive");
-            let bin_path = tmp_dir.path().join(bin_name);
-            {
-                let mut archive = zip::ZipArchive::new(std::fs::File::open(&tmp_archive_path)?)
-                    .map_err(Into::into)
-                    .with_context(|_| SelfUpdateFailedSnafu)?;
-                let mut bin = archive
-                    .by_name(bin_name)
-                    .map_err(Into::into)
-                    .with_context(|_| SelfUpdateFailedSnafu)?;
-                std::io::copy(&mut bin, &mut std::fs::File::create(&bin_path)?)?;
-            }
-
-            info!("replacing old executable with new executable");
-            // resolve before replacing: on Linux /proc/self/exe points at the unlinked inode after
-            let original_exe_path = std::env::current_exe()?;
-
-            self_replace::self_replace(&bin_path)
-                .map_err(Into::into)
-                .with_context(|_| SelfUpdateFailedSnafu)?;
-
-            #[cfg(target_os = "linux")]
-            {
-                info!("setting executable permission on new executable");
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&original_exe_path, std::fs::Permissions::from_mode(0o755))
-                    .unwrap();
-            }
-
-            Ok(original_exe_path)
-        })
-        .await??;
-
-    tx.send(SelfUpdateProgress::Complete).await.unwrap();
-
-    info!("update successful");
-
-    Ok(original_exe_path)
-}
-
-#[derive(Debug)]
 pub struct FetchRemotePresets {
     rid: RequestID,
     /// asked for by the user: report the outcome
@@ -907,6 +654,134 @@ impl UnpublishPreset {
                 error!("unpublishing: {e}");
                 app.last_action = Some(LastAction::failure(format!("unpublishing: {e}")));
             }
+        }
+    }
+}
+
+/// How a self-update went.
+#[derive(Debug)]
+enum UpdateOutcome {
+    UpToDate,
+    /// offline, server down, …: not worth bothering anyone
+    CheckFailed(String),
+    /// installing this release failed before
+    Skipped(u32),
+    Installed(u32, PathBuf),
+    Failed(u32, String),
+}
+
+#[derive(Debug)]
+pub struct Update {
+    rid: RequestID,
+    outcome: UpdateOutcome,
+}
+
+impl Update {
+    /// Checks for a newer release and installs it. Does nothing in development builds.
+    pub fn send(app: &mut App, ctx: &egui::Context) {
+        if update::RELEASE.is_none() {
+            return;
+        }
+        let rid = app.request_counter.next();
+        let tx = app.tx.clone();
+        let ctx = ctx.clone();
+        let server = app.state.config.preset_server().to_string();
+        let cache_dir = app.state.dirs.cache_dir.clone();
+        let handle = tokio::spawn(async move {
+            let outcome = match update::check(&server).await {
+                Ok(None) => UpdateOutcome::UpToDate,
+                Err(e) => UpdateOutcome::CheckFailed(e),
+                Ok(Some(m)) if update::attempted_before(&cache_dir, m.release) => {
+                    UpdateOutcome::Skipped(m.release)
+                }
+                Ok(Some(m)) => {
+                    let (progress_tx, mut progress_rx) = mpsc::channel(4);
+                    let forward = {
+                        let (tx, ctx, release) = (tx.clone(), ctx.clone(), m.release);
+                        tokio::spawn(async move {
+                            while let Some((done, total)) = progress_rx.recv().await {
+                                let state = UpdateState {
+                                    release,
+                                    done,
+                                    total,
+                                };
+                                let msg = UpdateProgress { rid, state };
+                                if tx.send(Message::UpdateProgress(msg)).await.is_err() {
+                                    break;
+                                }
+                                ctx.request_repaint();
+                            }
+                        })
+                    };
+                    let _ = tx
+                        .send(Message::UpdateProgress(UpdateProgress {
+                            rid,
+                            state: UpdateState {
+                                release: m.release,
+                                done: 0,
+                                total: 0,
+                            },
+                        }))
+                        .await;
+                    let result = update::install(&server, &m, &cache_dir, progress_tx).await;
+                    let _ = forward.await;
+                    match result {
+                        Ok(exe) => UpdateOutcome::Installed(m.release, exe),
+                        Err(e) => UpdateOutcome::Failed(m.release, e),
+                    }
+                }
+            };
+            let _ = tx.send(Message::Update(Update { rid, outcome })).await;
+            ctx.request_repaint();
+        });
+        app.self_update = Some(MessageHandle {
+            rid,
+            handle,
+            state: None,
+        });
+    }
+
+    fn receive(self, app: &mut App) {
+        if Some(self.rid) != app.self_update.as_ref().map(|r| r.rid) {
+            return;
+        }
+        app.self_update = None;
+        match self.outcome {
+            UpdateOutcome::UpToDate => {}
+            UpdateOutcome::CheckFailed(e) => warn!("checking for updates: {e}"),
+            UpdateOutcome::Skipped(n) => {
+                warn!("not installing release {n} again: the last attempt didn't take");
+                app.last_action = Some(LastAction::failure(format!(
+                    "updating to release {n} failed earlier; get mint again from the installer"
+                )));
+            }
+            UpdateOutcome::Installed(n, exe) => {
+                info!("updated to release {n}, restarting");
+                app.original_exe_path = Some(exe);
+                app.needs_restart = true;
+            }
+            UpdateOutcome::Failed(n, e) => {
+                error!("updating to release {n}: {e}");
+                app.last_action = Some(LastAction::failure(format!(
+                    "updating to release {n} failed: {e}"
+                )));
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct UpdateProgress {
+    rid: RequestID,
+    state: UpdateState,
+}
+
+impl UpdateProgress {
+    fn receive(self, app: &mut App) {
+        if let Some(handle) = &mut app.self_update
+            && handle.rid == self.rid
+        {
+            handle.state = Some(self.state);
         }
     }
 }

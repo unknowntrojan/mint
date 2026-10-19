@@ -9,7 +9,7 @@ mod toggle_switch;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, RangeInclusive};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::Instant;
 use std::{
     collections::{HashMap, HashSet},
     ops::DerefMut,
@@ -23,11 +23,9 @@ use eframe::{
     emath::{Align, Align2},
     epaint::{Color32, Stroke, text::LayoutJob},
 };
-use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use itertools::Itertools as _;
 use mint_lib::error::ResultExt as _;
 use mint_lib::mod_info::{ModioTags, RequiredStatus};
-use mint_lib::update::GitHubRelease;
 use strum::{EnumIter, IntoEnumIterator};
 use tokio::{
     sync::mpsc::{self, Receiver, Sender},
@@ -146,7 +144,6 @@ pub struct App {
     resolve_mod_rid: Option<MessageHandle<()>>,
     integrate_rid: Option<MessageHandle<HashMap<ModSpecification, SpecFetchProgress>>>,
     update_rid: Option<MessageHandle<()>>,
-    check_updates_rid: Option<MessageHandle<()>>,
     has_run_init: bool,
     request_counter: RequestCounter,
     window_provider_parameters: Option<WindowProviderParameters>,
@@ -156,17 +153,15 @@ pub struct App {
     settings_window: Option<WindowSettings>,
     modio_texture_handle: Option<egui::TextureHandle>,
     last_action: Option<LastAction>,
-    available_update: Option<GitHubRelease>,
-    show_update_time: Option<SystemTime>,
     open_profiles: HashSet<String>,
     lint_rid: Option<MessageHandle<()>>,
     lint_report_window: Option<WindowLintReport>,
     lint_report: Option<LintReport>,
     lints_toggle_window: Option<WindowLintsToggle>,
     lint_options: LintOptions,
-    cache: CommonMarkCache,
     needs_restart: bool,
-    self_update_rid: Option<MessageHandle<SelfUpdateProgress>>,
+    /// self-update; the state is set once a newer release is downloading
+    self_update: Option<MessageHandle<Option<UpdateState>>>,
     original_exe_path: Option<PathBuf>,
     problematic_mod_id: Option<u32>,
     /// Mods deleted this session, most recent last, for "Undo Deletion".
@@ -457,7 +452,6 @@ impl App {
             resolve_mod_rid: None,
             integrate_rid: None,
             update_rid: None,
-            check_updates_rid: None,
             has_run_init: false,
             window_provider_parameters: None,
             search_string: Default::default(),
@@ -466,17 +460,14 @@ impl App {
             settings_window: None,
             modio_texture_handle: None,
             last_action: None,
-            available_update: None,
-            show_update_time: None,
             open_profiles: Default::default(),
             lint_rid: None,
             lint_report_window: None,
             lint_report: None,
             lints_toggle_window: None,
             lint_options: LintOptions::default(),
-            cache: Default::default(),
             needs_restart: false,
-            self_update_rid: None,
+            self_update: None,
             original_exe_path: None,
             problematic_mod_id: None,
             deleted_mods: Vec::new(),
@@ -1211,90 +1202,38 @@ impl App {
         string
     }
 
+    /// Blocks the window while a self-update downloads; mint restarts when it's done.
     fn show_update_window(&mut self, ctx: &egui::Context) {
-        if let (Some(update), Some(update_time)) =
-            (self.available_update.as_ref(), self.show_update_time)
-        {
-            let now = SystemTime::now();
-            let wait_time = Duration::from_secs(10);
-            egui::Area::new("available-update-overlay".into())
-                .movable(false)
-                .fixed_pos(Pos2::ZERO)
-                .order(egui::Order::Background)
-                .show(ctx, |ui| {
-                    egui::Frame::NONE
-                        .fill(Color32::from_rgba_unmultiplied(0, 0, 0, 127))
-                        .show(ui, |ui| {
-                            ui.allocate_space(ui.available_size());
-                        })
-                });
-            if let Some(MessageHandle { state, .. }) = &self.self_update_rid {
-                egui::Window::new("Update progress")
-                    .collapsible(false)
-                    .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-                    .resizable(false)
-                    .show(ctx, |ui| {
-                        ui.with_layout(egui::Layout::top_down_justified(Align::Center), |ui| {
-                            match state {
-                                SelfUpdateProgress::Pending => {
-                                    ui.add(egui::ProgressBar::new(0.0).show_percentage());
-                                }
-                                SelfUpdateProgress::Progress { progress, size } => {
-                                    ui.add(
-                                        egui::ProgressBar::new(*progress as f32 / *size as f32)
-                                            .show_percentage(),
-                                    );
-                                }
-                                SelfUpdateProgress::Complete => {
-                                    ui.add(egui::ProgressBar::new(1.0).show_percentage());
-                                    ui.label(
-                                        egui::RichText::new("Update successful.")
-                                            .color(Color32::LIGHT_GREEN),
-                                    );
-
-                                    if ui.button("Restart").clicked() {
-                                        self.needs_restart = true;
-                                    }
-                                }
-                            };
-                        });
-                    });
-            } else {
-                egui::Window::new(format!("Update available: {}", update.tag_name))
-                    .collapsible(false)
-                    .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-                    .resizable(false)
-                    .show(ctx, |ui| {
-                        CommonMarkViewer::new().max_image_width(Some(512)).show(
-                            ui,
-                            &mut self.cache,
-                            &update.body,
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(Align::TOP), |ui| {
-                            if ui
-                                .add(egui::Button::new("Install update"))
-                                .on_hover_text("Download and install the update.")
-                                .clicked()
-                            {
-                                self.self_update_rid = Some(message::SelfUpdate::send(
-                                    &mut self.request_counter,
-                                    self.tx.clone(),
-                                    ctx.clone(),
-                                ));
-                            }
-
-                            let elapsed = now.duration_since(update_time).unwrap_or_default();
-                            if elapsed > wait_time {
-                                if ui.button("Close").clicked() {
-                                    self.show_update_time = None;
-                                }
-                            } else {
-                                ui.spinner();
-                            }
-                        });
-                    });
-            }
-        }
+        let Some(Some(state)) = self.self_update.as_ref().map(|h| h.state) else {
+            return;
+        };
+        egui::Area::new("update-overlay".into())
+            .movable(false)
+            .fixed_pos(Pos2::ZERO)
+            .order(egui::Order::Background)
+            .show(ctx, |ui| {
+                egui::Frame::NONE
+                    .fill(Color32::from_rgba_unmultiplied(0, 0, 0, 127))
+                    .show(ui, |ui| {
+                        ui.allocate_space(ui.available_size());
+                    })
+            });
+        egui::Window::new("Updating mint")
+            .collapsible(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "Installing release {}. mint restarts by itself when it's done.",
+                    state.release
+                ));
+                let fraction = if state.total > 0 {
+                    state.done as f32 / state.total as f32
+                } else {
+                    0.0
+                };
+                ui.add(egui::ProgressBar::new(fraction).show_percentage());
+            });
     }
 
     fn show_provider_parameters(&mut self, ctx: &egui::Context) {
@@ -1442,6 +1381,10 @@ impl App {
                                     window.drg_pak_path_err = None;
                                 }
                         });
+                        ui.end_row();
+
+                        ui.label("Version:");
+                        ui.label(crate::update::describe());
                         ui.end_row();
 
                         let config_dir = &self.state.dirs.config_dir;
@@ -1646,7 +1589,7 @@ impl App {
 
                         if ui
                             .add_enabled(
-                                self.check_updates_rid.is_none()
+                                self.self_update.is_none()
                                     && self.integrate_rid.is_none()
                                     && self.lint_rid.is_none(),
                                 egui::Button::new("Generate report"),
@@ -2160,7 +2103,9 @@ impl eframe::App for App {
             self.needs_restart = false;
 
             debug!("restarting...");
+            // same arguments: when started from Steam they hold the game's command line
             let _child = std::process::Command::new(original_exe_path)
+                .args(std::env::args_os().skip(1))
                 .spawn()
                 .unwrap();
             debug!("created child process");
@@ -2175,7 +2120,7 @@ impl eframe::App for App {
             let theme = GuiTheme::into_egui_theme(self.state.config.gui_theme);
             ctx.memory_mut(|m| m.options.theme_preference = theme);
 
-            message::CheckUpdates::send(self, ctx);
+            message::Update::send(self, ctx);
             message::FetchRemotePresets::send(self, ctx, false);
         }
 
@@ -2201,7 +2146,7 @@ impl eframe::App for App {
                     self.integrate_rid.is_none()
                         && self.update_rid.is_none()
                         && self.lint_rid.is_none()
-                        && self.self_update_rid.is_none()
+                        && self.self_update.is_none()
                         && self.state.config.drg_pak_path.is_some(),
                     |ui| {
                         if let Some(args) = &self.args
@@ -2381,18 +2326,6 @@ impl eframe::App for App {
                         self.state.mod_data.restore_mod(deleted);
                         self.state.mod_data.save().unwrap();
                     }
-                }
-                if let Some(available_update) = &self.available_update
-                    && ui
-                        .button(egui::RichText::new("\u{26A0}").color(ui.visuals().warn_fg_color))
-                        .on_hover_text(format!(
-                            "Update available: {}\n{}",
-                            available_update.tag_name, available_update.html_url
-                        ))
-                        .clicked()
-                {
-                    ui.ctx()
-                        .open_url(egui::OpenUrl::new_tab(&available_update.html_url));
                 }
                 ui.with_layout(egui::Layout::left_to_right(Align::TOP), |ui| {
                     if let Some(last_action) = &self.last_action {
@@ -2746,9 +2679,10 @@ impl From<FetchProgress> for SpecFetchProgress {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub enum SelfUpdateProgress {
-    Pending,
-    Progress { progress: u64, size: u64 },
-    Complete,
+/// A self-update in progress.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UpdateState {
+    pub release: u32,
+    pub done: u64,
+    pub total: u64,
 }

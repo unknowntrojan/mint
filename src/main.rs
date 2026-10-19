@@ -115,6 +115,7 @@ fn main() -> Result<()> {
     let _guard = mint_lib::setup_logging(dirs.data_dir.join("mint.log"), "mint")?;
     debug!("logging setup complete");
 
+    info!("mint {}", mint::update::describe());
     info!("config dir = {}", dirs.config_dir.display());
     info!("cache dir = {}", dirs.cache_dir.display());
     info!("data dir = {}", dirs.data_dir.display());

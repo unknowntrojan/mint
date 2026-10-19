@@ -5,6 +5,7 @@ pub mod mod_lints;
 pub mod providers;
 pub mod remote;
 pub mod state;
+pub mod update;
 
 use std::ops::Deref;
 use std::{

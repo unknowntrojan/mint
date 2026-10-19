@@ -85,6 +85,20 @@ pub struct ModData {
     pub profiles: BTreeMap<String, ModProfile!["0.1.0"]>,
     #[obake(cfg("0.1.0"))]
     pub groups: BTreeMap<String, ModGroup>,
+    /// Section headers in the mod list, top to bottom; the same in every profile.
+    #[obake(cfg("0.1.0"))]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<Section>,
+}
+
+/// A named header in the mod list. It sits directly above the entry `before` names (see
+/// `mod_list::entry_key`), or at the end of the list if that is `None`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Section {
+    pub name: String,
+    pub before: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collapsed: bool,
 }
 
 impl ModData!["0.1.0"] {
@@ -232,6 +246,7 @@ impl Default for ModData!["0.1.0"] {
             groups: [("default".to_string(), Default::default())]
                 .into_iter()
                 .collect(),
+            sections: Vec::new(),
         }
     }
 }
@@ -254,6 +269,7 @@ impl From<ModData!["0.0.0"]> for ModData!["0.1.0"] {
             active_profile: legacy.active_profile,
             profiles: new_profiles.into_iter().collect(),
             groups: BTreeMap::default(),
+            sections: Vec::new(),
         }
     }
 }
@@ -616,6 +632,7 @@ mod mod_data_tests {
                 },
             )]
             .into(),
+            sections: Vec::new(),
         };
 
         let mut counter = 0;
@@ -670,6 +687,7 @@ mod mod_data_tests {
                 },
             )]
             .into(),
+            sections: Vec::new(),
         };
 
         let mut counter = 0;
@@ -724,6 +742,7 @@ mod mod_data_tests {
                 },
             )]
             .into(),
+            sections: Vec::new(),
         };
 
         let any_required = mod_data.any_mod("default", |mc, _| mc.required);

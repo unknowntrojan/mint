@@ -40,7 +40,7 @@ use crate::gui::find_string::searchable_text;
 use crate::mod_lints::{LintId, LintReport, SplitAssetPair};
 use crate::providers::ProviderError;
 use crate::state::config::ConfigWrapper;
-use crate::state::mod_list::DeletedMod;
+use crate::state::mod_list::{DeletedMod, Row, drag_rows};
 use crate::state::{DEFAULT_PRESET_SERVER, SortingConfig, VersionAnnotatedConfig};
 use crate::{
     MintError,
@@ -164,6 +164,99 @@ pub struct App {
     problematic_mod_id: Option<u32>,
     /// Mods deleted this session, most recent last, for "Undo Deletion".
     deleted_mods: Vec<DeletedMod>,
+    renaming_section: Option<SectionRename>,
+}
+
+/// A section header being renamed in place.
+struct SectionRename {
+    index: usize,
+    text: String,
+    /// focus the text field on the next frame
+    focus: bool,
+}
+
+/// A change to the mod list's sections, applied after the list is drawn.
+enum SectionOp {
+    Rename(usize),
+    Move(usize, bool),
+    AddAfter(usize),
+    AddAbove(usize),
+    Remove(usize),
+    MoveEntry(usize, Option<usize>),
+}
+
+/// A row of the mod list for egui_dnd.
+struct RowItem {
+    id: egui::Id,
+    row: Row,
+}
+
+impl egui_dnd::DragDropItem for RowItem {
+    fn id(&self) -> egui::Id {
+        self.id
+    }
+}
+
+fn entry_id(entry: &ModOrGroup) -> egui::Id {
+    match entry {
+        ModOrGroup::Individual(mc) => egui::Id::new(("mod", &mc.spec.url)),
+        ModOrGroup::Group { group_name, .. } => egui::Id::new(("group", group_name)),
+    }
+}
+
+fn is_enabled(entry: &ModOrGroup) -> bool {
+    match entry {
+        ModOrGroup::Individual(mc) => mc.enabled,
+        ModOrGroup::Group { enabled, .. } => *enabled,
+    }
+}
+
+fn section_menu(ui: &mut Ui, s: usize, sections: usize) -> Option<SectionOp> {
+    let mut op = None;
+    if ui.button("Rename").clicked() {
+        op = Some(SectionOp::Rename(s));
+    }
+    if ui.add_enabled(s > 0, Button::new("Move up")).clicked() {
+        op = Some(SectionOp::Move(s, true));
+    }
+    if ui
+        .add_enabled(s + 1 < sections, Button::new("Move down"))
+        .clicked()
+    {
+        op = Some(SectionOp::Move(s, false));
+    }
+    if ui.button("Add section below").clicked() {
+        op = Some(SectionOp::AddAfter(s));
+    }
+    ui.separator();
+    if ui
+        .button("Remove section")
+        .on_hover_text("Its mods stay and join the section above")
+        .clicked()
+    {
+        op = Some(SectionOp::Remove(s));
+    }
+    op
+}
+
+fn mod_menu(ui: &mut Ui, i: usize, sections: &[String]) -> Option<SectionOp> {
+    let mut op = None;
+    if !sections.is_empty() {
+        ui.menu_button("Move to section", |ui| {
+            if ui.button("Top (no section)").clicked() {
+                op = Some(SectionOp::MoveEntry(i, None));
+            }
+            for (s, name) in sections.iter().enumerate() {
+                if ui.button(name).clicked() {
+                    op = Some(SectionOp::MoveEntry(i, Some(s)));
+                }
+            }
+        });
+    }
+    if ui.button("Add section above").clicked() {
+        op = Some(SectionOp::AddAbove(i));
+    }
+    op
 }
 
 #[derive(Default)]
@@ -257,23 +350,42 @@ impl App {
             original_exe_path: None,
             problematic_mod_id: None,
             deleted_mods: Vec::new(),
+            renaming_section: None,
         })
     }
 
     fn ui_profile(&mut self, ui: &mut Ui, profile: &str) {
         let sorting_config = self.get_sorting_config();
 
+        let rows = self.state.mod_data.rows();
+        let section_names: Vec<String> = self
+            .state
+            .mod_data
+            .sections
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        let search = self.search_string.to_lowercase();
+        let renaming = &mut self.renaming_section;
+
         let ModData {
-            profiles, groups, ..
+            profiles,
+            groups,
+            sections,
+            ..
         } = self.state.mod_data.deref_mut().deref_mut();
 
         struct Ctx {
             needs_save: bool,
             scroll_to_match: bool,
             btn_remove: Option<usize>,
-            drag: Option<egui_dnd::DragUpdate>,
+            /// the list after a drag
+            drag: Option<Vec<Row>>,
             /// Shift+click on a toggle: (row, new state) for every profile
             toggle_everywhere: Option<(usize, bool)>,
+            /// (section, new state, in every profile)
+            section_enabled: Option<(usize, bool, bool)>,
+            section_op: Option<SectionOp>,
             add_deps: Option<Vec<ModSpecification>>,
         }
         let mut ctx = Ctx {
@@ -282,6 +394,8 @@ impl App {
             btn_remove: None,
             drag: None,
             toggle_everywhere: None,
+            section_enabled: None,
+            section_op: None,
             add_deps: None,
         };
 
@@ -663,6 +777,13 @@ impl App {
                         res.scroll_to_me(None);
                         ctx.scroll_to_match = false;
                     }
+                    if group.is_none() {
+                        res.context_menu(|ui| {
+                            if let Some(op) = mod_menu(ui, row_index, &section_names) {
+                                ctx.section_op = Some(op);
+                            }
+                        });
+                    }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         // tags are disabled buttons; egui fades those with alpha since 0.32, which
@@ -690,6 +811,13 @@ impl App {
                     if search.is_match && self.scroll_to_match {
                         res.scroll_to_me(None);
                         ctx.scroll_to_match = false;
+                    }
+                    if group.is_none() {
+                        res.context_menu(|ui| {
+                            if let Some(op) = mod_menu(ui, row_index, &section_names) {
+                                ctx.section_op = Some(op);
+                            }
+                        });
                     }
                 }
             };
@@ -771,11 +899,62 @@ impl App {
                         });
                     });
             } else {
+                // enabled/total per section, and which sections hold a search match (those
+                // stay open while collapsed)
+                let mut counts = vec![(0usize, 0usize); sections.len()];
+                let mut has_match = vec![false; sections.len()];
+                let mut section_of = vec![None; rows.len()];
+                let mut current = None;
+                for (r, row) in rows.iter().enumerate() {
+                    match *row {
+                        Row::Section(s) => current = Some(s),
+                        Row::Entry(i) => {
+                            let (Some(s), Some(entry)) = (current, profile.mods.get(i)) else {
+                                continue;
+                            };
+                            section_of[r] = Some(s);
+                            counts[s].1 += 1;
+                            counts[s].0 += is_enabled(entry) as usize;
+                            if !search.is_empty()
+                                && let ModOrGroup::Individual(mc) = entry
+                            {
+                                let name = self
+                                    .state
+                                    .store
+                                    .get_mod_info(&mc.spec)
+                                    .map_or_else(|| mc.spec.url.clone(), |i| i.name);
+                                has_match[s] |= name.to_lowercase().contains(&search);
+                            }
+                        }
+                    }
+                }
+                let open = |s: usize| !sections[s].collapsed || has_match[s];
+                let hidden: Vec<bool> = section_of
+                    .iter()
+                    .map(|s| s.is_some_and(|s| !open(s)))
+                    .collect();
+                let items: Vec<RowItem> = rows
+                    .iter()
+                    .zip(&hidden)
+                    .filter(|(_, hidden)| !**hidden)
+                    .map(|(&row, _)| RowItem {
+                        id: match row {
+                            Row::Section(s) => egui::Id::new(("section", s)),
+                            Row::Entry(i) => profile.mods.get(i).map_or(egui::Id::NULL, entry_id),
+                        },
+                        row,
+                    })
+                    .collect();
+                let section_open: Vec<bool> = (0..sections.len()).map(open).collect();
+
+                // headers have no drag handle, but mods can be dropped around them
                 let res = egui_dnd::dnd(ui, ui.id())
                     .with_mouse_config(egui_dnd::DragDropConfig::mouse())
-                    .show(
-                        profile.mods.iter_mut().enumerate(),
-                        |ui, (_index, item), handle, state| {
+                    .show(items.into_iter(), |ui, item, handle, state| match item.row {
+                        Row::Entry(i) => {
+                            let Some(entry) = profile.mods.get_mut(i) else {
+                                return;
+                            };
                             let mut frame = egui::Frame::NONE;
                             if state.dragged {
                                 frame.fill = ui.visuals().extreme_bg_color
@@ -788,14 +967,104 @@ impl App {
                                         ui.label("   ☰  ");
                                     });
 
-                                    ui_item(&mut ctx, ui, item, state.index);
+                                    ui_item(&mut ctx, ui, entry, i);
                                 });
                             });
-                        },
-                    );
+                        }
+                        Row::Section(s) => {
+                            let (on, total) = counts[s];
+                            let frame = egui::Frame::NONE
+                                .fill(ui.visuals().selection.bg_fill.gamma_multiply(0.3))
+                                .inner_margin(egui::Margin::symmetric(0, 3));
+                            frame.show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    // arrow and toggle line up with the mods' drag handle and toggle
+                                    let open = section_open[s];
+                                    if ui
+                                        .add(
+                                            egui::Label::new(if open { "   ⏷  " } else { "   ⏵  " })
+                                                .sense(egui::Sense::click()),
+                                        )
+                                        .on_hover_text(if open { "Collapse" } else { "Expand" })
+                                        .clicked()
+                                    {
+                                        sections[s].collapsed = open;
+                                        ctx.needs_save = true;
+                                    }
+                                    ui.add_visible(false, Button::new(" 🗑 "));
+
+                                    let mut all = total > 0 && on == total;
+                                    if ui
+                                        .add_enabled(total > 0, toggle_switch(&mut all))
+                                        .on_hover_text_at_pointer(
+                                            "Enable or disable the whole section\nShift+click: in all presets",
+                                        )
+                                        .changed()
+                                    {
+                                        let everywhere = ui.input(|i| i.modifiers.shift);
+                                        ctx.section_enabled = Some((s, all, everywhere));
+                                    }
+
+                                    match renaming.as_mut().filter(|r| r.index == s) {
+                                        Some(rename) => {
+                                            let res = ui.add(
+                                                egui::TextEdit::singleline(&mut rename.text)
+                                                    .desired_width(200.0),
+                                            );
+                                            if rename.focus {
+                                                res.request_focus();
+                                                rename.focus = false;
+                                            }
+                                            if res.lost_focus() {
+                                                let name = rename.text.trim().to_string();
+                                                if !name.is_empty()
+                                                    && !ui.input(|i| i.key_pressed(egui::Key::Escape))
+                                                {
+                                                    sections[s].name = name;
+                                                    ctx.needs_save = true;
+                                                }
+                                                *renaming = None;
+                                            }
+                                        }
+                                        None => {
+                                            let name = ui
+                                                .add(
+                                                    egui::Label::new(
+                                                        RichText::new(&sections[s].name)
+                                                            .strong()
+                                                            .size(15.0),
+                                                    )
+                                                    .sense(egui::Sense::click()),
+                                                )
+                                                .on_hover_text("Double-click to rename, right-click for more");
+                                            if name.double_clicked() {
+                                                ctx.section_op = Some(SectionOp::Rename(s));
+                                            }
+                                            name.context_menu(|ui| {
+                                                if let Some(op) = section_menu(ui, s, sections.len()) {
+                                                    ctx.section_op = Some(op);
+                                                }
+                                            });
+                                        }
+                                    }
+                                    ui.weak(format!("{on}/{total} enabled"));
+
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        ui.menu_button("…", |ui| {
+                                            if let Some(op) = section_menu(ui, s, sections.len()) {
+                                                ctx.section_op = Some(op);
+                                            }
+                                        });
+                                    });
+                                });
+                            });
+                        }
+                    });
 
                 // applied to every profile below
-                ctx.drag = res.final_update();
+                if let Some(update) = res.final_update() {
+                    ctx.drag = Some(drag_rows(&rows, &hidden, update.from, update.to));
+                }
             }
         };
 
@@ -822,8 +1091,38 @@ impl App {
         if let Some((index, enabled)) = ctx.toggle_everywhere {
             mod_data.set_enabled_everywhere(index, enabled);
         }
-        if let Some(drag) = ctx.drag {
-            mod_data.move_mod(drag.from, drag.to);
+        if let Some(rows) = ctx.drag {
+            mod_data.arrange(&rows);
+            ctx.needs_save = true;
+        }
+        if let Some((s, enabled, everywhere)) = ctx.section_enabled {
+            mod_data.set_section_enabled(s, enabled, (!everywhere).then_some(profile));
+            ctx.needs_save = true;
+        }
+        if let Some(op) = ctx.section_op {
+            const NEW: &str = "New section";
+            let rename = match op {
+                SectionOp::Rename(s) => Some(s),
+                SectionOp::Move(s, up) => {
+                    mod_data.move_section(s, up);
+                    None
+                }
+                SectionOp::AddAfter(s) => Some(mod_data.insert_section_after(NEW.into(), s)),
+                SectionOp::AddAbove(i) => Some(mod_data.insert_section_above(NEW.into(), i)),
+                SectionOp::Remove(s) => {
+                    mod_data.remove_section(s);
+                    None
+                }
+                SectionOp::MoveEntry(i, s) => {
+                    mod_data.move_to_section(i, s);
+                    None
+                }
+            };
+            self.renaming_section = rename.map(|index| SectionRename {
+                index,
+                text: mod_data.sections[index].name.clone(),
+                focus: true,
+            });
             ctx.needs_save = true;
         }
         if let Some(index) = ctx.btn_remove {
@@ -1993,6 +2292,20 @@ impl eframe::App for App {
                 }
                 if ui.button("⚙").on_hover_text("Open settings").clicked() {
                     self.settings_window = Some(WindowSettings::new(&self.state));
+                }
+                if ui
+                    .button("Add Section")
+                    .on_hover_text("Adds a section header at the top of the mod list.\nRight-click a mod for more.")
+                    .clicked()
+                {
+                    let mod_data = self.state.mod_data.deref_mut().deref_mut();
+                    let index = mod_data.insert_section("New section".into(), 0);
+                    self.renaming_section = Some(SectionRename {
+                        index,
+                        text: mod_data.sections[index].name.clone(),
+                        focus: true,
+                    });
+                    self.state.mod_data.save().unwrap();
                 }
                 if let Some(last) = self.deleted_mods.last() {
                     let name = last

@@ -5,10 +5,17 @@
 //! keeps them in lockstep: changes are applied at the same position in every profile, and
 //! [`ModData::normalize_shared_list`] reconciles profiles that disagree (e.g. files written by older
 //! versions).
+//!
+//! Section headers ([`ModData::sections`]) are shared the same way. Each is anchored to the entry
+//! below it, so adding mods never moves a header; operations that reorder the list go through
+//! [`ModData::arrange`], which re-anchors them.
 
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Range;
 
-use super::{ModConfig, ModData_v0_1_0 as ModData, ModOrGroup, ModProfile_v0_1_0 as ModProfile};
+use super::{
+    ModConfig, ModData_v0_1_0 as ModData, ModOrGroup, ModProfile_v0_1_0 as ModProfile, Section,
+};
 use crate::providers::ModSpecification;
 
 /// Identifies an entry across profiles. mod.io mods are identified by mod ID (falling back to the
@@ -63,6 +70,8 @@ fn shift<T>(from: usize, to: usize, items: &mut [T]) {
 pub struct DeletedMod {
     index: usize,
     entries: BTreeMap<String, ModOrGroup>,
+    /// sections whose header sat directly above it
+    sections: Vec<String>,
 }
 
 impl DeletedMod {
@@ -133,14 +142,7 @@ impl ModData {
                 changed = true;
             }
         }
-        changed
-    }
-
-    /// Moves an entry in every profile (egui_dnd `DragUpdate` semantics).
-    pub fn move_mod(&mut self, from: usize, to: usize) {
-        for profile in self.profiles.values_mut() {
-            shift(from, to, &mut profile.mods);
-        }
+        self.normalize_sections() || changed
     }
 
     /// Adds a mod at the top of every profile: as given in the active profile, disabled in the
@@ -173,13 +175,28 @@ impl ModData {
 
     /// Removes an entry from every profile. Restore it with [`ModData::restore_mod`].
     pub fn remove_mod(&mut self, index: usize) -> Option<DeletedMod> {
+        let list = &self.get_active_profile().mods;
+        let key = list.get(index).map(entry_key);
+        let below = list.get(index + 1).map(entry_key);
+        let mut sections = Vec::new();
+        for section in &mut self.sections {
+            if key.is_some() && section.before == key {
+                section.before = below.clone();
+                sections.push(section.name.clone());
+            }
+        }
+
         let mut entries = BTreeMap::new();
         for (name, profile) in self.profiles.iter_mut() {
             if index < profile.mods.len() {
                 entries.insert(name.clone(), profile.mods.remove(index));
             }
         }
-        (!entries.is_empty()).then_some(DeletedMod { index, entries })
+        (!entries.is_empty()).then_some(DeletedMod {
+            index,
+            entries,
+            sections,
+        })
     }
 
     /// Puts a removed entry back where it was, with each profile's state from before. Profiles
@@ -206,6 +223,15 @@ impl ModData {
                 .unwrap_or_else(|| disabled(&template));
             let at = deleted.index.min(profile.mods.len());
             profile.mods.insert(at, entry);
+        }
+
+        let list = &self.get_active_profile().mods;
+        let at = deleted.index.min(list.len() - 1);
+        let below = list.get(at + 1).map(entry_key);
+        for section in &mut self.sections {
+            if deleted.sections.contains(&section.name) && section.before == below {
+                section.before = Some(key.clone());
+            }
         }
     }
 
@@ -253,6 +279,237 @@ impl ModData {
     }
 }
 
+/// A row of the mod list as shown: a section header (index into [`ModData::sections`]) or an
+/// entry (index into every profile's list).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Row {
+    Section(usize),
+    Entry(usize),
+}
+
+/// Where a section header sits: right above the first entry after `pos` in `rows`.
+fn anchor_after(rows: &[Row], pos: usize) -> usize {
+    rows[pos..]
+        .iter()
+        .position(|r| matches!(r, Row::Section(_)))
+        .map_or(rows.len(), |p| pos + p)
+}
+
+/// `rows` after dragging visible row `from` before visible row `to` (egui_dnd semantics). A row
+/// carries the hidden rows below it, so a collapsed section moves with its entries.
+pub fn drag_rows(rows: &[Row], hidden: &[bool], from: usize, to: usize) -> Vec<Row> {
+    let mut chunks: Vec<Vec<Row>> = Vec::new();
+    for (row, &hidden) in rows.iter().zip(hidden) {
+        match chunks.last_mut() {
+            Some(chunk) if hidden => chunk.push(*row),
+            _ => chunks.push(vec![*row]),
+        }
+    }
+    shift(from, to, &mut chunks);
+    chunks.into_iter().flatten().collect()
+}
+
+impl ModData {
+    /// The index of the first entry below each section header. A header whose entry is gone
+    /// (e.g. removed by an older mint) moves down to the next header.
+    fn section_starts(&self) -> Vec<usize> {
+        let list = &self.get_active_profile().mods;
+        let index: HashMap<String, usize> = list
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (entry_key(e), i))
+            .collect();
+        let mut starts = vec![list.len(); self.sections.len()];
+        let mut next = list.len();
+        for (start, section) in starts.iter_mut().zip(&self.sections).rev() {
+            if let Some(i) = section.before.as_ref().and_then(|k| index.get(k)) {
+                next = (*i).min(next);
+            }
+            *start = next;
+        }
+        starts
+    }
+
+    /// The entries of each section.
+    pub fn section_ranges(&self) -> Vec<Range<usize>> {
+        let starts = self.section_starts();
+        let len = self.get_active_profile().mods.len();
+        (0..starts.len())
+            .map(|s| starts[s]..starts.get(s + 1).copied().unwrap_or(len))
+            .collect()
+    }
+
+    /// The list with section headers in place; every entry and section appears once.
+    pub fn rows(&self) -> Vec<Row> {
+        let starts = self.section_starts();
+        let len = self.get_active_profile().mods.len();
+        let mut rows = Vec::with_capacity(len + starts.len());
+        let mut s = 0;
+        for i in 0..=len {
+            while s < starts.len() && starts[s] == i {
+                rows.push(Row::Section(s));
+                s += 1;
+            }
+            if i < len {
+                rows.push(Row::Entry(i));
+            }
+        }
+        rows
+    }
+
+    /// Reorders entries (in every profile) and sections to match `rows`, a permutation of
+    /// [`ModData::rows`].
+    pub fn arrange(&mut self, rows: &[Row]) {
+        let keys: Vec<String> = self
+            .get_active_profile()
+            .mods
+            .iter()
+            .map(entry_key)
+            .collect();
+        for profile in self.profiles.values_mut() {
+            let mut old: Vec<Option<ModOrGroup>> = std::mem::take(&mut profile.mods)
+                .into_iter()
+                .map(Some)
+                .collect();
+            profile.mods = rows
+                .iter()
+                .filter_map(|r| match r {
+                    Row::Entry(i) => old.get_mut(*i).and_then(Option::take),
+                    Row::Section(_) => None,
+                })
+                .collect();
+        }
+
+        let mut old: Vec<Option<Section>> = std::mem::take(&mut self.sections)
+            .into_iter()
+            .map(Some)
+            .collect();
+        let mut below = None;
+        for row in rows.iter().rev() {
+            match *row {
+                Row::Entry(i) => below = keys.get(i).cloned(),
+                Row::Section(s) => {
+                    if let Some(section) = old.get_mut(s).and_then(Option::take) {
+                        self.sections.push(Section {
+                            before: below.clone(),
+                            ..section
+                        });
+                    }
+                }
+            }
+        }
+        self.sections.reverse();
+    }
+
+    /// Rewrites section anchors that point at missing entries. Returns whether anything changed.
+    pub fn normalize_sections(&mut self) -> bool {
+        let before = self.sections.clone();
+        let rows = self.rows();
+        self.arrange(&rows);
+        self.sections != before
+    }
+
+    /// Adds a section at `row` (a position in [`ModData::rows`]) and returns its index.
+    pub fn insert_section(&mut self, name: String, row: usize) -> usize {
+        let mut rows = self.rows();
+        let row = row.min(rows.len());
+        rows.insert(row, Row::Section(self.sections.len()));
+        self.sections.push(Section {
+            name,
+            before: None,
+            collapsed: false,
+        });
+        self.arrange(&rows);
+        rows[..row]
+            .iter()
+            .filter(|r| matches!(r, Row::Section(_)))
+            .count()
+    }
+
+    /// Adds a section directly below section `s` and all its entries.
+    pub fn insert_section_after(&mut self, name: String, s: usize) -> usize {
+        let rows = self.rows();
+        let header = rows.iter().position(|r| *r == Row::Section(s));
+        let at = header.map_or(rows.len(), |h| anchor_after(&rows, h + 1));
+        self.insert_section(name, at)
+    }
+
+    /// Adds a section directly above entry `i`.
+    pub fn insert_section_above(&mut self, name: String, i: usize) -> usize {
+        let at = self
+            .rows()
+            .iter()
+            .position(|r| *r == Row::Entry(i))
+            .unwrap_or(usize::MAX);
+        self.insert_section(name, at)
+    }
+
+    /// Removes a section header; its entries join the section above.
+    pub fn remove_section(&mut self, s: usize) {
+        let rows: Vec<Row> = self
+            .rows()
+            .into_iter()
+            .filter(|r| *r != Row::Section(s))
+            .collect();
+        self.arrange(&rows);
+    }
+
+    /// Swaps section `s` and its entries with the section above or below. Returns its new index.
+    pub fn move_section(&mut self, s: usize, up: bool) -> usize {
+        let target = if up { s.checked_sub(1) } else { Some(s + 1) };
+        let Some(target) = target.filter(|t| *t < self.sections.len()) else {
+            return s;
+        };
+        // blocks[0]: entries above the first header; blocks[k + 1]: section k
+        let mut blocks: Vec<Vec<Row>> = vec![Vec::new()];
+        for row in self.rows() {
+            if matches!(row, Row::Section(_)) {
+                blocks.push(Vec::new());
+            }
+            blocks.last_mut().unwrap().push(row);
+        }
+        blocks.swap(s + 1, target + 1);
+        self.arrange(&blocks.concat());
+        target
+    }
+
+    /// Moves entry `i` to the end of section `s`, or above all sections if `None`.
+    pub fn move_to_section(&mut self, i: usize, s: Option<usize>) {
+        let mut rows: Vec<Row> = self
+            .rows()
+            .into_iter()
+            .filter(|r| *r != Row::Entry(i))
+            .collect();
+        let at = match s {
+            None => anchor_after(&rows, 0),
+            Some(s) => match rows.iter().position(|r| *r == Row::Section(s)) {
+                Some(h) => anchor_after(&rows, h + 1),
+                None => return,
+            },
+        };
+        rows.insert(at, Row::Entry(i));
+        self.arrange(&rows);
+    }
+
+    /// Enables or disables every entry of section `s` in `profile`, or in every profile.
+    pub fn set_section_enabled(&mut self, s: usize, enabled: bool, profile: Option<&str>) {
+        let Some(range) = self.section_ranges().get(s).cloned() else {
+            return;
+        };
+        for (name, p) in self.profiles.iter_mut() {
+            if profile.is_some_and(|wanted| wanted != name) {
+                continue;
+            }
+            for entry in p.mods.get_mut(range.clone()).into_iter().flatten() {
+                match entry {
+                    ModOrGroup::Individual(mc) => mc.enabled = enabled,
+                    ModOrGroup::Group { enabled: e, .. } => *e = enabled,
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +531,7 @@ mod tests {
                 .map(|(n, mods)| (n.to_string(), ModProfile { mods: mods.clone() }))
                 .collect(),
             groups: BTreeMap::new(),
+            sections: Vec::new(),
         }
     }
 
@@ -379,7 +637,8 @@ mod tests {
         assert_eq!(enabled(&d, "a"), [true, true, false]);
         assert_eq!(enabled(&d, "b"), [false, false, true]);
 
-        d.move_mod(0, 3); // to the bottom
+        let rows = drag_rows(&d.rows(), &[false; 3], 0, 3); // to the bottom
+        d.arrange(&rows);
         assert_shared(&d);
         assert_eq!(urls(&d, "b"), ["x", "y", "new"]);
 
@@ -463,5 +722,132 @@ mod tests {
             (b.spec.url.as_str(), b.priority, b.enabled),
             ("x#v2", 5, false)
         );
+    }
+
+    fn view(d: &ModData) -> Vec<(String, Vec<String>)> {
+        let all = urls(d, &d.active_profile);
+        d.section_ranges()
+            .into_iter()
+            .zip(&d.sections)
+            .map(|(r, s)| (s.name.clone(), all[r].to_vec()))
+            .collect()
+    }
+
+    fn sectioned() -> ModData {
+        let mut d = data(
+            "a",
+            &[
+                ("a", vec![m("x", true), m("y", false), m("z", true)]),
+                ("b", vec![m("x", false), m("y", true), m("z", false)]),
+            ],
+        );
+        assert_eq!(d.insert_section_above("S1".into(), 0), 0);
+        assert_eq!(d.insert_section_above("S2".into(), 2), 1);
+        d
+    }
+
+    fn sv(v: &[(&str, &[&str])]) -> Vec<(String, Vec<String>)> {
+        v.iter()
+            .map(|(n, e)| (n.to_string(), e.iter().map(|s| s.to_string()).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn sections_survive_adding_and_dragging() {
+        let mut d = sectioned();
+        assert_eq!(view(&d), sv(&[("S1", &["x", "y"]), ("S2", &["z"])]));
+
+        // new mods land above every header
+        d.add_mod(ModConfig {
+            spec: ModSpecification::new("new".into()),
+            required: false,
+            enabled: true,
+            priority: 0,
+        });
+        assert_eq!(urls(&d, "a"), ["new", "x", "y", "z"]);
+        assert_eq!(view(&d), sv(&[("S1", &["x", "y"]), ("S2", &["z"])]));
+
+        // rows: new S1 x y S2 z; drag "new" between S2 and z -> first entry of S2
+        let rows = d.rows();
+        assert_eq!(rows[1], Row::Section(0));
+        let moved = drag_rows(&rows, &[false; 6], 0, 5);
+        d.arrange(&moved);
+        assert_shared(&d);
+        assert_eq!(view(&d), sv(&[("S1", &["x", "y"]), ("S2", &["new", "z"])]));
+
+        // dragging the first entry of S1 out of it re-anchors S1 to the next one
+        let rows = d.rows(); // S1 x y S2 new z
+        d.arrange(&drag_rows(&rows, &[false; 6], 1, 6));
+        assert_eq!(view(&d), sv(&[("S1", &["y"]), ("S2", &["new", "z", "x"])]));
+    }
+
+    #[test]
+    fn dragging_a_collapsed_section_carries_its_entries() {
+        let mut d = sectioned(); // S1 x y S2 z
+        let rows = d.rows();
+        let hidden = [false, true, true, false, false];
+        // visible: S1 S2 z; drop S1 (with x y) at the end
+        d.arrange(&drag_rows(&rows, &hidden, 0, 3));
+        assert_eq!(urls(&d, "b"), ["z", "x", "y"]);
+        assert_eq!(view(&d), sv(&[("S2", &["z"]), ("S1", &["x", "y"])]));
+    }
+
+    #[test]
+    fn section_operations() {
+        let mut d = sectioned();
+        assert_eq!(d.move_section(0, false), 1);
+        assert_eq!(urls(&d, "a"), ["z", "x", "y"]);
+        assert_eq!(view(&d), sv(&[("S2", &["z"]), ("S1", &["x", "y"])]));
+        assert_eq!(d.move_section(1, true), 0);
+        assert_eq!(view(&d), sv(&[("S1", &["x", "y"]), ("S2", &["z"])]));
+        assert_eq!(d.move_section(0, true), 0);
+
+        d.move_to_section(0, Some(1));
+        assert_eq!(view(&d), sv(&[("S1", &["y"]), ("S2", &["z", "x"])]));
+        d.move_to_section(2, None);
+        assert_eq!(urls(&d, "a"), ["x", "y", "z"]);
+        assert_eq!(view(&d), sv(&[("S1", &["y"]), ("S2", &["z"])]));
+
+        // empty section below S1, then above everything
+        assert_eq!(d.insert_section_after("E".into(), 0), 1);
+        assert_eq!(view(&d), sv(&[("S1", &["y"]), ("E", &[]), ("S2", &["z"])]));
+        assert_eq!(d.insert_section("Top".into(), 0), 0);
+        assert_eq!(view(&d)[0], sv(&[("Top", &["x"])])[0]);
+
+        d.remove_section(0);
+        d.remove_section(1);
+        assert_eq!(view(&d), sv(&[("S1", &["y"]), ("S2", &["z"])]));
+        assert_shared(&d);
+
+        d.set_section_enabled(1, true, Some("b"));
+        assert_eq!(enabled(&d, "b"), [false, true, true]);
+        assert_eq!(enabled(&d, "a"), [true, false, true]);
+        d.set_section_enabled(0, false, None);
+        assert_eq!(enabled(&d, "a"), [true, false, true]);
+        assert_eq!(enabled(&d, "b"), [false, false, true]);
+    }
+
+    #[test]
+    fn deleting_the_first_entry_of_a_section_keeps_the_header() {
+        let mut d = sectioned(); // S1 x y S2 z
+        let deleted = d.remove_mod(2).unwrap();
+        assert_eq!(view(&d), sv(&[("S1", &["x", "y"]), ("S2", &[])]));
+        d.restore_mod(deleted);
+        assert_eq!(view(&d), sv(&[("S1", &["x", "y"]), ("S2", &["z"])]));
+
+        let deleted = d.remove_mod(0).unwrap();
+        assert_eq!(view(&d), sv(&[("S1", &["y"]), ("S2", &["z"])]));
+        d.restore_mod(deleted);
+        assert_eq!(view(&d), sv(&[("S1", &["x", "y"]), ("S2", &["z"])]));
+    }
+
+    #[test]
+    fn missing_anchors_are_repaired() {
+        let mut d = sectioned();
+        d.sections[0].before = Some("gone".into());
+        assert!(d.normalize_shared_list());
+        assert_eq!(view(&d), sv(&[("S1", &[]), ("S2", &["z"])]));
+        assert_eq!(d.sections[0].before.as_deref(), Some("z"));
+        assert!(!d.normalize_shared_list());
     }
 }

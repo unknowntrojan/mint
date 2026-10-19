@@ -43,11 +43,14 @@ fn upload(name: &str, ids: &[u32]) -> PresetUpload {
             .map(|&id| PresetMod {
                 mod_id: id,
                 name_id: format!("mod-{id}"),
+                name: format!("Mod {id}"),
                 modfile_id: Some(id * 100),
                 enabled: id % 2 == 1,
                 required: false,
+                priority: 0,
             })
             .collect(),
+        sections: Vec::new(),
     }
 }
 
@@ -241,5 +244,33 @@ async fn revoked_keys_stop_working_without_restart() {
     assert_eq!(
         call(&s.app, put(Some(&s.key), body)).await.0,
         StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn sections_are_stored_and_count_as_content() {
+    let s = server();
+    let mut u = upload("Sorted", &[1, 2, 3]);
+    let (_, _, body) = call(&s.app, put(Some(&s.key), json(&u))).await;
+    assert_eq!(serde_json::from_slice::<Preset>(&body).unwrap().revision, 1);
+
+    u.sections = vec![remote_preset::PresetSection {
+        name: "QoL".into(),
+        before: Some(2),
+    }];
+    let (_, _, body) = call(&s.app, put(Some(&s.key), json(&u))).await;
+    let p: Preset = serde_json::from_slice(&body).unwrap();
+    assert_eq!((p.revision, p.sections.len()), (2, 1));
+
+    let (_, _, body) = call(&s.app, get("/api/v1/presets/sorted")).await;
+    assert_eq!(
+        serde_json::from_slice::<Preset>(&body).unwrap().sections,
+        u.sections
+    );
+
+    u.sections[0].before = Some(9);
+    assert_eq!(
+        call(&s.app, put(Some(&s.key), json(&u))).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
     );
 }

@@ -91,6 +91,7 @@ impl Store {
         if let Some(prev) = &previous
             && prev.name == name
             && prev.mods == upload.mods
+            && prev.sections == upload.sections
         {
             return Ok(prev.clone());
         }
@@ -101,6 +102,7 @@ impl Store {
             published: now,
             publisher: publisher.to_string(),
             mods: upload.mods,
+            sections: upload.sections,
             slug: slug.clone(),
         };
         let dir = self.presets.join(&slug);

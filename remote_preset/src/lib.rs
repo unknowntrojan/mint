@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod release;
+
 pub const MAX_NAME_LEN: usize = 64;
 pub const MAX_MODS: usize = 2000;
 pub const MAX_SECTIONS: usize = 200;

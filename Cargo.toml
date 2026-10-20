@@ -115,6 +115,13 @@ egui_dnd = "0.17.0"
 hook = { path = "hook", artifact = "cdylib", optional = true, target = "x86_64-pc-windows-msvc" }
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 hook = { path = "hook", artifact = "cdylib", optional = true, target = "x86_64-pc-windows-gnu" }
+[target.'cfg(windows)'.dependencies]
+# main.rs: attach the CLI to the terminal it was started from
+windows-sys = { version = "0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Console",
+] }
 
 # release.sh builds releases with this profile
 [profile.dist]

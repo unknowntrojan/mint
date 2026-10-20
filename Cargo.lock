@@ -3032,6 +3032,7 @@ dependencies = [
  "uasset_utils",
  "unreal_asset",
  "url",
+ "windows-sys 0.61.2",
  "zip",
 ]
 

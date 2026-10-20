@@ -1,3 +1,7 @@
+// Release builds are GUI programs on Windows, so no console window opens next to mint; see
+// attach_parent_console for the CLI.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -94,7 +98,67 @@ struct Args {
     appdata: Option<PathBuf>,
 }
 
+/// Run from a terminal with a subcommand, a GUI-subsystem mint prints into that terminal. The
+/// shell doesn't wait for it, though.
+#[cfg(all(windows, not(debug_assertions)))]
+fn attach_parent_console() {
+    use windows_sys::Win32::Foundation::{
+        GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows_sys::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
+        STD_OUTPUT_HANDLE, SetStdHandle,
+    };
+
+    if std::env::args_os().len() <= 1 {
+        return;
+    }
+    let usable = |h: HANDLE| !h.is_null() && h != INVALID_HANDLE_VALUE;
+    let open = |name: &str| {
+        let name: Vec<u16> = name.encode_utf16().chain([0]).collect();
+        // SAFETY: NUL-terminated name, no security attributes or template
+        unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            )
+        }
+    };
+    // SAFETY: plain Win32 calls; the console handles stay open for the process's lifetime
+    unsafe {
+        // redirected into a file or pipe: that works as it is
+        if usable(GetStdHandle(STD_OUTPUT_HANDLE)) || AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+            return;
+        }
+        // attaching doesn't give a GUI process standard handles
+        let out = open("CONOUT$");
+        if usable(out) {
+            SetStdHandle(STD_OUTPUT_HANDLE, out);
+            if !usable(GetStdHandle(STD_ERROR_HANDLE)) {
+                SetStdHandle(STD_ERROR_HANDLE, out);
+            }
+        }
+        if !usable(GetStdHandle(STD_INPUT_HANDLE)) {
+            let input = open("CONIN$");
+            if usable(input) {
+                SetStdHandle(STD_INPUT_HANDLE, input);
+            }
+        }
+    }
+}
+
 fn main() -> Result<()> {
+    #[cfg(all(windows, not(debug_assertions)))]
+    attach_parent_console();
+
     #[cfg(target_os = "windows")]
     {
         // Try to enable ANSI code support on Windows 10 for console. If it fails, then whatever

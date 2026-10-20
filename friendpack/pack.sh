@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
-# Build the two friendpack downloads:
+# Build the friendpack: by default one file per platform,
+#   mint-setup.exe / mint-setup  the latest release with a payload appended: your config (incl. the
+#                            mod.io OAuth token, without your publish key), profiles, mod metadata
+#                            and Oodle. Double-clicked, it sets mint up and points DRG's Steam
+#                            launch options at it; started again later, it just opens mint (see
+#                            src/setup). Mods come from the preset server's mirror.
+#
+# With --zips, the two older downloads instead:
 #   mint-installer-DATE.zip  mint (Linux + Windows), the Oodle libraries and the install scripts.
 #                            mint is the latest published release (../release.sh), so it updates
 #                            itself from then on; the installer only matters for new friends.
@@ -13,15 +20,17 @@ set -euo pipefail
 
 usage() {
 	cat <<EOF
-usage: $0 [-o DIR] [--no-installer | --no-mods] [--profile NAME]... [--all-mods]
+usage: $0 [-o DIR] [--zips [--no-installer | --no-mods] [--all-mods]] [--profile NAME]...
           [--oodle-dir DIR] [--linux-bin PATH] [--win-exe PATH]
 
   -o DIR            output directory (default: current directory)
-  --no-installer    only build mint-mods-DATE.zip
-  --no-mods         only build mint-installer-DATE.zip
+  --zips            build mint-installer-DATE.zip and mint-mods-DATE.zip instead of the
+                    setup files
+  --no-installer    with --zips: only build mint-mods-DATE.zip
+  --no-mods         with --zips: only build mint-installer-DATE.zip
   --profile NAME    only include this profile in the mods pack (repeatable; the first one
                     becomes active). Default: all profiles.
-  --all-mods        put the whole mod cache into the mods pack. Default: only the mods that
+  --all-mods        with --zips: the whole mod cache into the mods pack. Default: the mods that
                     a packed profile enables, and their dependencies.
   --oodle-dir DIR   directory holding $OODLE_LINUX and $OODLE_WIN
                     (default: $repo/friendpack/oodle). Checked against the SHA-256s that
@@ -50,11 +59,12 @@ outdir=$PWD
 date=$(date +%Y%m%d)
 oodle_dir=$repo/friendpack/oodle
 linux_bin= win_exe=
-do_installer=1 do_mods=1 all_mods=0
+zips=0 do_installer=1 do_mods=1 all_mods=0
 profiles=()
 while (($#)); do
 	case $1 in
 	-o) outdir=$(realpath -m -- "$2"); shift 2 ;;
+	--zips) zips=1; shift ;;
 	--no-installer) do_installer=0; shift ;;
 	--no-mods) do_mods=0; shift ;;
 	--profile) profiles+=("$2"); shift 2 ;;
@@ -82,12 +92,9 @@ check_oodle() {
 	echo "$2  $f" | sha256sum -c --quiet - || { echo "unexpected sha256 for $f" >&2; exit 1; }
 }
 
-build_installer() {
-	check_oodle "$OODLE_LINUX" "$OODLE_LINUX_SHA256"
-	check_oodle "$OODLE_WIN" "$OODLE_WIN_SHA256"
-
-	local root=$stage/mint-installer target_dir release
-	mkdir -p "$root/bin"
+# Sets linux_bin and win_exe: the latest release unless given.
+get_binaries() {
+	local target_dir release
 	if [[ -z $linux_bin || -z $win_exe ]]; then
 		target_dir=$(cargo metadata --format-version 1 --no-deps --manifest-path "$repo/Cargo.toml" |
 			python3 -I -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
@@ -97,6 +104,95 @@ build_installer() {
 		linux_bin=${linux_bin:-$stage/release/mint}
 		win_exe=${win_exe:-$stage/release/mint.exe}
 	fi
+}
+
+# Writes config.json (DRG pak path nulled, publish key dropped) and mod_data.json (only the
+# --profile ones) into $1.
+stage_config() {
+	local f
+	for f in "$cfg_src/config.json" "$cfg_src/mod_data.json" "$cache_src/cache.json"; do
+		[[ -e $f ]] || { echo "missing $f" >&2; exit 1; }
+	done
+	if pgrep -x mint >/dev/null; then
+		echo "mint is running; close it first (it rewrites config on exit)" >&2
+		exit 1
+	fi
+	mkdir -p "$1"
+	python3 -I - "$cfg_src/config.json" "$1/config.json" <<'EOF'
+import json, sys
+cfg = json.load(open(sys.argv[1], encoding="utf-8"))
+if "drg_pak_path" not in cfg:
+    sys.exit("config.json has no drg_pak_path key; unexpected format")
+cfg["drg_pak_path"] = None  # install scripts replace the literal `"drg_pak_path": null`
+cfg.pop("publish_key", None)  # lets whoever holds it publish presets; it stays with you
+with open(sys.argv[2], "w", encoding="utf-8", newline="\n") as f:
+    json.dump(cfg, f, indent=2)
+EOF
+	python3 -I - "$cfg_src/mod_data.json" "$1/mod_data.json" "${profiles[@]}" <<'EOF'
+import json, sys
+src, dst, wanted = sys.argv[1], sys.argv[2], sys.argv[3:]
+data = json.load(open(src, encoding="utf-8"))
+if data.get("version") != "0.1.0":
+    sys.exit("mod_data.json version %r; only 0.1.0 is supported" % data.get("version"))
+if wanted:
+    missing = [p for p in wanted if p not in data["profiles"]]
+    if missing:
+        sys.exit("unknown profile(s): %s (have: %s)" % (", ".join(missing), ", ".join(data["profiles"])))
+    data["profiles"] = {p: data["profiles"][p] for p in wanted}
+    data["active_profile"] = wanted[0]
+print("profiles: %s (active: %s)" % (", ".join(data["profiles"]), data["active_profile"]))
+with open(dst, "w", encoding="utf-8", newline="\n") as f:
+    json.dump(data, f, indent=2)
+EOF
+	chmod 600 "$1/"*.json
+}
+
+build_setup() {
+	check_oodle "$OODLE_LINUX" "$OODLE_LINUX_SHA256"
+	check_oodle "$OODLE_WIN" "$OODLE_WIN_SHA256"
+	get_binaries
+	# a release from before setup existed would just start, without the payload
+	local release
+	release=$("$linux_bin" --release-number 2>/dev/null) || {
+		echo "$linux_bin can't set itself up yet; publish a newer release with ../release.sh" >&2
+		exit 1
+	}
+	[[ $release == none ]] && echo "NOTE: not a release build; friends' mint won't update itself" >&2
+
+	local root=$stage/setup
+	stage_config "$root"
+	cp --reflink=auto -- "$cache_src/cache.json" "$root/"
+	python3 -I - "$root" "$outdir" "$linux_bin" "$oodle_dir/$OODLE_LINUX" "$win_exe" \
+		"$oodle_dir/$OODLE_WIN" <<'EOF'
+import io, os, struct, sys, zipfile
+
+root, outdir = sys.argv[1:3]
+for binary, oodle, out in [(sys.argv[3], sys.argv[4], "mint-setup"), (sys.argv[5], sys.argv[6], "mint-setup.exe")]:
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as z:
+        for name in ("config.json", "mod_data.json", "cache.json"):
+            z.write(os.path.join(root, name), name)
+        z.write(oodle, os.path.basename(oodle))
+    payload = payload.getvalue()
+    path = os.path.join(outdir, out)
+    with open(binary, "rb") as f, open(path + ".tmp", "wb") as o:
+        o.write(f.read())
+        # read back by src/setup: [binary][zip][zip length, u64 LE]["MINTPACK"]
+        o.write(payload + struct.pack("<Q", len(payload)) + b"MINTPACK")
+    os.chmod(path + ".tmp", 0o755)
+    os.replace(path + ".tmp", path)
+    print("wrote %s (%.1f MB)" % (path, os.path.getsize(path) / 1e6))
+EOF
+	echo "NOTE: the setup files contain your mod.io OAuth token. Share them only with people you trust."
+}
+
+build_installer() {
+	check_oodle "$OODLE_LINUX" "$OODLE_LINUX_SHA256"
+	check_oodle "$OODLE_WIN" "$OODLE_WIN_SHA256"
+
+	local root=$stage/mint-installer
+	mkdir -p "$root/bin"
+	get_binaries
 	install -m755 "$linux_bin" "$root/bin/mint"
 	install -m644 "$win_exe" "$root/bin/mint.exe"
 	install -m644 "$oodle_dir/$OODLE_LINUX" "$oodle_dir/$OODLE_WIN" "$root/bin/"
@@ -113,43 +209,10 @@ build_installer() {
 }
 
 build_mods() {
-	local f
-	for f in "$cfg_src/config.json" "$cfg_src/mod_data.json" "$cache_src/cache.json" "$cache_src/blobs"; do
-		[[ -e $f ]] || { echo "missing $f" >&2; exit 1; }
-	done
-	if pgrep -x mint >/dev/null; then
-		echo "mint is running; close it first (it rewrites config on exit)" >&2
-		exit 1
-	fi
-
+	[[ -d $cache_src/blobs ]] || { echo "missing $cache_src/blobs" >&2; exit 1; }
 	local root=$stage/mint-mods
-	mkdir -p "$root/config" "$root/cache"
-	python3 -I - "$cfg_src/config.json" "$root/config/config.json" <<'EOF'
-import json, sys
-cfg = json.load(open(sys.argv[1], encoding="utf-8"))
-if "drg_pak_path" not in cfg:
-    sys.exit("config.json has no drg_pak_path key; unexpected format")
-cfg["drg_pak_path"] = None  # install scripts replace the literal `"drg_pak_path": null`
-cfg.pop("publish_key", None)  # lets whoever holds it publish presets; it stays with you
-with open(sys.argv[2], "w", encoding="utf-8", newline="\n") as f:
-    json.dump(cfg, f, indent=2)
-EOF
-	python3 -I - "$cfg_src/mod_data.json" "$root/config/mod_data.json" "${profiles[@]}" <<'EOF'
-import json, sys
-src, dst, wanted = sys.argv[1], sys.argv[2], sys.argv[3:]
-data = json.load(open(src, encoding="utf-8"))
-if data.get("version") != "0.1.0":
-    sys.exit("mod_data.json version %r; only 0.1.0 is supported" % data.get("version"))
-if wanted:
-    missing = [p for p in wanted if p not in data["profiles"]]
-    if missing:
-        sys.exit("unknown profile(s): %s (have: %s)" % (", ".join(missing), ", ".join(data["profiles"])))
-    data["profiles"] = {p: data["profiles"][p] for p in wanted}
-    data["active_profile"] = wanted[0]
-print("profiles: %s (active: %s)" % (", ".join(data["profiles"]), data["active_profile"]))
-with open(dst, "w", encoding="utf-8", newline="\n") as f:
-    json.dump(data, f, indent=2)
-EOF
+	mkdir -p "$root/cache"
+	stage_config "$root/config"
 	cp --reflink=auto -- "$cache_src/cache.json" "$root/cache/"
 	if ((all_mods)); then
 		cp -r --reflink=auto -- "$cache_src/blobs" "$root/cache/"
@@ -208,7 +271,6 @@ EOF
 			(cd "$cache_src/blobs" && cp --reflink=auto -t "$root/cache/blobs" -- "${blobs[@]}")
 		fi
 	fi
-	chmod 600 "$root/config/"*.json
 
 	local out=$outdir/mint-mods-$date.zip
 	rm -f -- "$out"
@@ -217,6 +279,10 @@ EOF
 	echo "NOTE: the mods pack contains your mod.io OAuth token. Share it only with people you trust."
 }
 
-((do_installer)) && build_installer
-((do_mods)) && build_mods
+if ((zips)); then
+	((do_installer)) && build_installer
+	((do_mods)) && build_mods
+else
+	build_setup
+fi
 exit 0

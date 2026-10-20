@@ -10,7 +10,7 @@
 //! - `PUT    /api/v1/releases/{n}`              publish release n with its signed manifest (auth)
 //! - `GET    /api/v1/releases/{n}/files/{name}` a file of a published release (immutable)
 //! - `GET    /api/v1/mods`                      every mirrored mod file
-//! - `GET    /api/v1/mods/{mod}/files/{file}`   a mod.io file, fetched first for preset mods
+//! - `GET    /api/v1/mods/{mod}/files/{file}`   a mod.io file, fetched for known mods
 //! - `PUT    /api/v1/mods/{mod}/files/{file}?sha256=…` upload a mod.io file (auth)
 //! - `GET    /health`
 
@@ -360,8 +360,14 @@ async fn mod_file(
     let found = blocking(move || mods.get(mod_id, modfile_id).map_err(internal)).await?;
     let (path, meta) = match found {
         Some(found) => found,
-        // only mods of published presets: the server isn't a mod.io proxy for anyone
-        None if s.mods.can_fetch() && s.store.has_mod(mod_id) => {
+        None => {
+            // only mods it has a file of or a preset lists: it isn't a mod.io proxy for anyone
+            let mods = s.mods.clone();
+            let known = s.store.has_mod(mod_id)
+                || blocking(move || mods.has_mod(mod_id).map_err(internal)).await?;
+            if !s.mods.can_fetch() || !known {
+                return Err(ApiError(StatusCode::NOT_FOUND, "not mirrored".into()));
+            }
             let meta = s
                 .mods
                 .fetch(mod_id, modfile_id)
@@ -383,7 +389,6 @@ async fn mod_file(
                 .0;
             (path, meta)
         }
-        None => return Err(ApiError(StatusCode::NOT_FOUND, "not mirrored".into())),
     };
     serve_file(&path, Some(&meta.sha256)).await
 }

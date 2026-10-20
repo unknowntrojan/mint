@@ -55,9 +55,10 @@ mint falls back to mod.io.
 
 - **Fetching:** with `MINT_MODIO_TOKEN` (a mod.io OAuth token, e.g. the one in mint's config) in
   `.env`, the server downloads a missing file from mod.io the first time someone asks for it,
-  checks it against mod.io's MD5 and size, and keeps it. Only for mods that a published preset
-  lists, so the public endpoint isn't a mod.io proxy for anyone. Without the token it serves only
-  uploaded files.
+  checks it against mod.io's MD5 and size, and keeps it. Only for mods the mirror has a file of
+  already (any version, e.g. from seeding) or that a published preset lists, so the public
+  endpoint isn't a mod.io proxy for anyone: seeding decides which mods it keeps current. Without
+  the token it serves only uploaded files.
 - **Seeding:** `server/seed-mods.sh` copies every file in your mint cache that the mirror
   doesn't have straight into `data/mods/` over ssh (LAN speed, any size), checked against the
   SHA-256 mint stores it under. Away from the LAN, `mint_release seed-mods` uploads through the
@@ -129,7 +130,7 @@ MINT_SERVER_DATA=./data MINT_SERVER_LISTEN=127.0.0.1:8080 cargo run -p mint_serv
 | `PUT /api/v1/releases/{n}` | `Bearer <key>` | publish release n: the signed manifest; its files must be uploaded |
 | `GET /api/v1/releases/{n}/files/{name}` | | a binary of a published release, cacheable forever |
 | `GET /api/v1/mods` | | every mirrored mod file (`mod_id`, `modfile_id`, `size`, `sha256`) |
-| `GET /api/v1/mods/{mod}/files/{modfile}` | | a mod.io file (`x-sha256` header); fetched from mod.io first if missing and a preset lists the mod; cacheable forever |
+| `GET /api/v1/mods/{mod}/files/{modfile}` | | a mod.io file (`x-sha256` header); fetched from mod.io first if missing and the mirror has another file of the mod or a preset lists it; cacheable forever |
 | `PUT /api/v1/mods/{mod}/files/{modfile}?sha256=…` | `Bearer <key>` | upload a mod.io file (≤ 95 MB, streamed); a file that's there already is kept |
 | `GET /health` | | `ok` |
 

@@ -639,3 +639,32 @@ async fn mod_files_of_preset_mods_are_fetched_from_modio_once() {
     let leftovers: Vec<_> = std::fs::read_dir(s.data.join("mods/8")).unwrap().collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
+
+#[tokio::test]
+async fn new_versions_of_mirrored_mods_are_fetched_without_a_preset() {
+    use std::sync::atomic::Ordering;
+
+    let new = b"pak five v2".as_slice();
+    let (api, downloads) =
+        fake_modio(vec![(5, 501, new, md5(new)), (6, 600, b"six", md5(b"six"))]).await;
+    let s = server();
+    let app = app_with_modio(&s.data, Some(ModIo::new(&api, "tok").unwrap()));
+
+    // seeded: version 500 of mod 5
+    let old = b"pak five v1".as_slice();
+    assert_eq!(
+        call(&app, put_mod(Some(&s.key), 5, 500, &sha256(old), old))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    // mod 5 updated on mod.io: the mirror fetches the new version
+    let (st, _, body) = call(&app, get("/api/v1/mods/5/files/501")).await;
+    assert_eq!((st, body.as_slice()), (StatusCode::OK, new));
+    // mod 6: no file of it here, no preset lists it
+    assert_eq!(
+        call(&app, get("/api/v1/mods/6/files/600")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(downloads.load(Ordering::SeqCst), 1);
+}

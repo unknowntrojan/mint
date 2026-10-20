@@ -4,7 +4,8 @@
 //!
 //! Files get here two ways: a publisher uploads them from mint's cache (checked against the
 //! SHA-256 mint stores them under), or the server downloads them from mod.io the first time
-//! someone asks for one (checked against mod.io's MD5 and size).
+//! someone asks for one (checked against mod.io's MD5 and size), for mods it has a file of
+//! already or that a published preset lists.
 
 use std::collections::HashMap;
 use std::fs;
@@ -77,6 +78,25 @@ impl Mods {
         self.dir
             .join(mod_id.to_string())
             .join(modfile_id.to_string())
+    }
+
+    /// Whether any file of the mod is here.
+    pub fn has_mod(&self, mod_id: u32) -> io::Result<bool> {
+        let entries = match fs::read_dir(self.dir.join(mod_id.to_string())) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        for entry in entries {
+            if entry?
+                .file_name()
+                .to_str()
+                .is_some_and(|n| n.ends_with(".json"))
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// The file and its metadata, if it's here.

@@ -8,6 +8,7 @@ members = [
   "remote_preset",
   "server",
   "release",
+  "launcher",
 ]
 # `cargo build` builds mint as before; the server and release tool are built with `-p`
 default-members = [".", "mint_lib", "hook", "hook_resolvers", "remote_preset"]
@@ -116,6 +117,8 @@ hook = { path = "hook", artifact = "cdylib", optional = true, target = "x86_64-p
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 hook = { path = "hook", artifact = "cdylib", optional = true, target = "x86_64-pc-windows-gnu" }
 [target.'cfg(windows)'.dependencies]
+# Steam starts this instead of mint; mint carries it and keeps it next to itself (setup)
+mint_launch = { path = "launcher", artifact = "bin" }
 # main.rs: attach the CLI to the terminal it was started from; setup: is Steam running
 windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",

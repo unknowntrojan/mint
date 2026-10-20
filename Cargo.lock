@@ -3002,6 +3002,7 @@ dependencies = [
  "indexmap 2.14.2",
  "inventory",
  "itertools",
+ "mint_launch",
  "mint_lib",
  "mockall",
  "modio",
@@ -3034,6 +3035,13 @@ dependencies = [
  "url",
  "windows-sys 0.61.2",
  "zip",
+]
+
+[[package]]
+name = "mint_launch"
+version = "0.2.10"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

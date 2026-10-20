@@ -1,0 +1,15 @@
+[package]
+name = "mint_launch"
+description = "Started by Steam instead of mint; starts the game anyway if mint can't"
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "mint-launch"
+path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging"] }

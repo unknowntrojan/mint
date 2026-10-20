@@ -132,13 +132,14 @@ pub fn set_launch_options(
     Ok(Some(out))
 }
 
-/// `current` with mint started in front of the game: `"<mint>" launch %command%`, then the
-/// game's options with [`FLAGS`] added. Other options stay: game options, and wrappers or
-/// variables before `%command%`. A mint from an earlier install, wherever it was, is replaced.
-pub fn with_mint(current: &str, mint: &str) -> String {
+/// `current` with `wrapper` (what starts mint: `"C:\…\mint-launch.exe"`, or `"/…/mint" launch`
+/// on Linux) in front of `%command%`, then the game's options with [`FLAGS`] added. Other options
+/// stay: game options, and wrappers or variables before `%command%`. mint from an earlier
+/// install, wherever it was and however it was started, is replaced.
+pub fn with_wrapper(current: &str, wrapper: &str) -> String {
     static EARLIER: OnceLock<regex::Regex> = OnceLock::new();
     let earlier = EARLIER.get_or_init(|| {
-        regex::Regex::new(r#""[^"]*mint(?:\.exe)?"\s+launch\s+%command%"#).unwrap()
+        regex::Regex::new(r#""[^"]*mint(?:-launch)?(?:\.exe)?"(?:\s+launch)?\s+%command%"#).unwrap()
     });
     let current = earlier.replace(current.trim(), "%command%");
     // without %command%, Steam passes the options to the game
@@ -146,7 +147,7 @@ pub fn with_mint(current: &str, mint: &str) -> String {
         Some(i) => (&current[..i], &current[i + "%command%".len()..]),
         None => ("", &*current),
     };
-    let mut out = format!("{before}\"{mint}\" launch %command%");
+    let mut out = format!("{before}{wrapper} %command%");
     let after = after.trim();
     if !after.is_empty() {
         out.push(' ');
@@ -182,7 +183,7 @@ pub fn with_flags(current: &str) -> String {
 mod tests {
     use super::*;
 
-    const MINT: &str = r"C:\Users\Jo Doe\AppData\Local\mint\mint.exe";
+    const LAUNCHER: &str = r#""C:\Users\Jo Doe\AppData\Local\mint\mint-launch.exe""#;
 
     fn vdf(apps: &str) -> String {
         format!(
@@ -195,10 +196,10 @@ mod tests {
         let text = vdf(
             "\n\t\t\t\t\t\"548430\"\n\t\t\t\t\t{\n\t\t\t\t\t\t\"LaunchOptions\"\t\t\"-nosplash\"\n\t\t\t\t\t\t\"Playtime\"\t\t\"12\"\n\t\t\t\t\t}",
         );
-        let out = set_launch_options(&text, |c| with_mint(c, MINT))
+        let out = set_launch_options(&text, |c| with_wrapper(c, LAUNCHER))
             .unwrap()
             .unwrap();
-        let want = format!("\"{MINT}\" launch %command% -nosplash -disablemodding");
+        let want = format!("{LAUNCHER} %command% -nosplash -disablemodding");
         assert_eq!(launch_options(&out).unwrap(), want);
         assert_eq!(
             out,
@@ -206,7 +207,7 @@ mod tests {
         );
         // again: nothing to change
         assert_eq!(
-            set_launch_options(&out, |c| with_mint(c, MINT)).unwrap(),
+            set_launch_options(&out, |c| with_wrapper(c, LAUNCHER)).unwrap(),
             None
         );
     }
@@ -241,8 +242,8 @@ mod tests {
 
     #[test]
     fn launch_options_with_mint() {
-        let m = |c| with_mint(c, MINT);
-        let w = format!("\"{MINT}\" launch %command%");
+        let m = |c| with_wrapper(c, LAUNCHER);
+        let w = format!("{LAUNCHER} %command%");
         assert_eq!(m(""), format!("{w} -disablemodding -nosplash"));
         assert_eq!(
             m("-nosplash -dx11"),
@@ -256,10 +257,19 @@ mod tests {
             m("PROTON_LOG=1 %command%"),
             format!("PROTON_LOG=1 {w} -disablemodding -nosplash")
         );
-        // a mint installed elsewhere before
+        // mint from before: elsewhere, or started without the launcher
         assert_eq!(
             m("\"/home/jo/old/mint\" launch %command% -NOSPLASH -disablemodding"),
             format!("{w} -NOSPLASH -disablemodding")
+        );
+        assert_eq!(
+            m(r#""C:\old\mint.exe" launch %command% -dx11"#),
+            format!("{w} -dx11 -disablemodding -nosplash")
+        );
+        // Linux starts mint directly; switching replaces the launcher too
+        assert_eq!(
+            with_wrapper(&m("-dx11"), r#""/home/jo/.local/share/mint/mint" launch"#),
+            r#""/home/jo/.local/share/mint/mint" launch %command% -dx11 -disablemodding -nosplash"#
         );
         // idempotent
         let once = m("gamemoderun %command% -dx11");
@@ -269,13 +279,17 @@ mod tests {
     #[test]
     fn escapes_survive_a_round_trip() {
         let text = vdf("\n\t\t\t\t\t\"548430\"\n\t\t\t\t\t{\n\t\t\t\t\t}");
-        let out = set_launch_options(&text, |c| with_mint(c, MINT))
+        let out = set_launch_options(&text, |c| with_wrapper(c, LAUNCHER))
             .unwrap()
             .unwrap();
-        assert!(out.contains(r#"\"C:\\Users\\Jo Doe\\AppData\\Local\\mint\\mint.exe\" launch"#));
+        assert!(
+            out.contains(
+                r#"\"C:\\Users\\Jo Doe\\AppData\\Local\\mint\\mint-launch.exe\" %command%"#
+            )
+        );
         assert_eq!(
             launch_options(&out).unwrap(),
-            format!("\"{MINT}\" launch %command% -disablemodding -nosplash")
+            format!("{LAUNCHER} %command% -disablemodding -nosplash")
         );
     }
 }

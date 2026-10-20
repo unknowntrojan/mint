@@ -3,11 +3,11 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use mint::mod_lints::{LintId, run_lints};
 use mint::providers::ProviderFactory;
@@ -200,6 +200,15 @@ fn main() -> Result<()> {
     debug!("logging setup complete");
 
     info!("mint {}", mint::update::describe());
+    // Steam starts mint through the launcher; keep the one next to mint current
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(Path::parent)
+        && let Err(e) = mint::setup::ensure_launcher(dir)
+    {
+        warn!("updating {}: {e}", mint::setup::LAUNCHER);
+    }
     info!("config dir = {}", dirs.config_dir.display());
     info!("cache dir = {}", dirs.cache_dir.display());
     info!("data dir = {}", dirs.data_dir.display());

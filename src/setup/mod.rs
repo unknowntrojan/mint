@@ -34,6 +34,38 @@ pub const OODLE: &str = if cfg!(windows) {
 /// In the config directory once a friendpack is imported; install.ps1 and install.sh write it too.
 const MARKER: &str = "friendpack-installed";
 
+/// What Steam starts on Windows, next to mint: it starts mint, or the game anyway if mint can't
+/// (see launcher/). Linux starts mint directly.
+pub const LAUNCHER: &str = "mint-launch.exe";
+
+#[cfg(windows)]
+const LAUNCHER_BIN: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_MINT_LAUNCH_mint-launch"));
+
+/// Puts the launcher this mint carries into `dir` unless it's there already. A running launcher
+/// (it started this mint) can't be overwritten but can be renamed, so an outdated one is moved
+/// to `*.old` first. Does nothing outside Windows.
+pub fn ensure_launcher(dir: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        let path = dir.join(LAUNCHER);
+        let old = dir.join(format!("{LAUNCHER}.old"));
+        let _ = fs::remove_file(&old);
+        if fs::read(&path).is_ok_and(|b| b == LAUNCHER_BIN) {
+            return Ok(());
+        }
+        if path.exists() && fs::remove_file(&path).is_err() {
+            fs::rename(&path, &old)?;
+        }
+        let tmp = dir.join(format!(".{LAUNCHER}.new"));
+        fs::write(&tmp, LAUNCHER_BIN)?;
+        fs::rename(&tmp, &path)?;
+        info!("wrote {}", path.display());
+    }
+    #[cfg(not(windows))]
+    let _ = dir;
+    Ok(())
+}
+
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -321,6 +353,7 @@ pub fn install_exe(payload: &Payload, paths: &Paths) -> io::Result<Option<String
     }
     // mint loads Oodle (some mods need it) from next to itself and never downloads it
     fs::write(paths.install_dir.join(OODLE), payload.file(OODLE)?)?;
+    ensure_launcher(&paths.install_dir)?;
     let what = crate::update::describe();
     info!("installed {} ({what})", target.display());
     Ok(Some(format!("Installed mint ({what})")))
@@ -446,14 +479,18 @@ pub struct LaunchOptions {
 /// Puts mint in front of DRG in every Steam user's launch options, keeping a backup of each
 /// changed localconfig.vdf. Steam must not run.
 pub fn set_launch_options(paths: &Paths) -> LaunchOptions {
-    let mint = paths.exe().to_string_lossy().into_owned();
+    let wrapper = if cfg!(windows) {
+        format!("\"{}\"", paths.install_dir.join(LAUNCHER).display())
+    } else {
+        format!("\"{}\" launch", paths.exe().display())
+    };
     let ts = now();
     let mut done = Vec::new();
     let mut ok = !paths.steam_configs.is_empty();
     for config in &paths.steam_configs {
         let result = (|| -> Result<Option<String>> {
             let text = fs::read_to_string(config)?;
-            let Some(new) = vdf::set_launch_options(&text, |c| vdf::with_mint(c, &mint))
+            let Some(new) = vdf::set_launch_options(&text, |c| vdf::with_wrapper(c, &wrapper))
                 .map_err(anyhow::Error::msg)?
             else {
                 return Ok(None);
@@ -512,6 +549,9 @@ pub fn run(payload: Payload) -> Result<()> {
     }
     // set up already: bring the installed mint up to date, and start it
     if let Err(e) = install_exe(&payload, &paths) {
+        warn!("{e}");
+    }
+    if let Err(e) = ensure_launcher(&paths.install_dir) {
         warn!("{e}");
     }
     let steam = configured_pak(&paths).is_some_and(|p| check_pak(&p).is_ok_and(|xbox| !xbox));

@@ -4,21 +4,25 @@
 #                            mint is the latest published release (../release.sh), so it updates
 #                            itself from then on; the installer only matters for new friends.
 #   mint-mods-DATE.zip       your config (incl. the mod.io OAuth token), profiles (mod_data.json)
-#                            and mod cache. Big; friends only need it once. The DRG pak path is
-#                            nulled out; the installer fills it in per machine. Your publish key
-#                            for the preset server is left out.
+#                            and the cached mods that a packed profile enables, with their
+#                            dependencies (--all-mods: the whole mod cache). Friends only need it
+#                            once; mods they turn on later are downloaded from mod.io. The DRG pak
+#                            path is nulled out; the installer fills it in per machine. Your
+#                            publish key for the preset server is left out.
 set -euo pipefail
 
 usage() {
 	cat <<EOF
-usage: $0 [-o DIR] [--no-installer | --no-mods] [--profile NAME]... [--oodle-dir DIR]
-          [--linux-bin PATH] [--win-exe PATH]
+usage: $0 [-o DIR] [--no-installer | --no-mods] [--profile NAME]... [--all-mods]
+          [--oodle-dir DIR] [--linux-bin PATH] [--win-exe PATH]
 
   -o DIR            output directory (default: current directory)
   --no-installer    only build mint-mods-DATE.zip
   --no-mods         only build mint-installer-DATE.zip
   --profile NAME    only include this profile in the mods pack (repeatable; the first one
                     becomes active). Default: all profiles.
+  --all-mods        put the whole mod cache into the mods pack. Default: only the mods that
+                    a packed profile enables, and their dependencies.
   --oodle-dir DIR   directory holding $OODLE_LINUX and $OODLE_WIN
                     (default: $repo/friendpack/oodle). Checked against the SHA-256s that
                     upstream oodle_loader pins. mint never downloads them itself.
@@ -46,7 +50,7 @@ outdir=$PWD
 date=$(date +%Y%m%d)
 oodle_dir=$repo/friendpack/oodle
 linux_bin= win_exe=
-do_installer=1 do_mods=1
+do_installer=1 do_mods=1 all_mods=0
 profiles=()
 while (($#)); do
 	case $1 in
@@ -54,6 +58,7 @@ while (($#)); do
 	--no-installer) do_installer=0; shift ;;
 	--no-mods) do_mods=0; shift ;;
 	--profile) profiles+=("$2"); shift 2 ;;
+	--all-mods) all_mods=1; shift ;;
 	--oodle-dir) oodle_dir=$(realpath -- "$2"); shift 2 ;;
 	--linux-bin) linux_bin=$(realpath -- "$2"); shift 2 ;;
 	--win-exe) win_exe=$(realpath -- "$2"); shift 2 ;;
@@ -146,7 +151,63 @@ with open(dst, "w", encoding="utf-8", newline="\n") as f:
     json.dump(data, f, indent=2)
 EOF
 	cp --reflink=auto -- "$cache_src/cache.json" "$root/cache/"
-	cp -r --reflink=auto -- "$cache_src/blobs" "$root/cache/"
+	if ((all_mods)); then
+		cp -r --reflink=auto -- "$cache_src/blobs" "$root/cache/"
+	else
+		# cache.json stays complete: mint downloads any mod whose blob is missing.
+		python3 -I - "$cache_src/cache.json" "$root/config/mod_data.json" "$cache_src/blobs" \
+			>"$stage/blobs.txt" <<'EOF'
+import json, os, re, sys
+cache_path, data_path, blob_dir = sys.argv[1:]
+modio = json.load(open(cache_path, encoding="utf-8"))["cache"].get("modio", {})
+mods, names, deps, blob_of = (modio.get(k, {}) for k in ("mods", "mod_id_map", "dependencies", "modfile_blobs"))
+data = json.load(open(data_path, encoding="utf-8"))
+
+# modfiles mint would integrate for a mod (unpinned: its latest) and for its dependencies
+modfiles, seen = set(), set()
+def add(mod_id):
+    if mod_id in seen:
+        return
+    seen.add(mod_id)
+    m = mods.get(mod_id, {})
+    if m.get("latest_modfile"):
+        modfiles.add(str(m["latest_modfile"]))
+    if m.get("modfiles"):
+        modfiles.add(str(m["modfiles"][-1]["id"]))
+    for d in deps.get(mod_id, []):
+        add(str(d))
+
+for profile in data["profiles"].values():
+    for entry in profile["mods"]:
+        hit = re.search(r"mod\.io/g/drg/m/([^/#?]+)(?:#(\d+)(?:/(\d+))?)?", entry["spec"]["url"])
+        if not entry["enabled"] or not hit:
+            continue
+        if hit[3]:
+            modfiles.add(hit[3])
+        add(hit[2] or str(names.get(hit[1], "")))
+
+wanted = {blob_of[f] for f in modfiles if f in blob_of}
+modio_blobs = set(blob_of.values())
+blobs = [b for b in sorted(os.listdir(blob_dir)) if not b.startswith(".")]  # .x: unfinished
+total = kept = n = 0
+for name in blobs:
+    size = os.path.getsize(os.path.join(blob_dir, name))
+    total += size
+    # blobs of other providers stay
+    if name in wanted or name not in modio_blobs:
+        print(name)
+        kept += size
+        n += 1
+print("mod cache: %d of %d files, %.0f of %.0f MB (mods enabled in a packed profile; --all-mods for all)"
+      % (n, len(blobs), kept / 1e6, total / 1e6), file=sys.stderr)
+EOF
+		mkdir -p "$root/cache/blobs"
+		local blobs
+		mapfile -t blobs <"$stage/blobs.txt"
+		if ((${#blobs[@]})); then
+			(cd "$cache_src/blobs" && cp --reflink=auto -t "$root/cache/blobs" -- "${blobs[@]}")
+		fi
+	fi
 	chmod 600 "$root/config/"*.json
 
 	local out=$outdir/mint-mods-$date.zip

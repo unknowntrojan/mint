@@ -1,3 +1,4 @@
+mod autolaunch;
 mod find_string;
 mod message;
 mod named_combobox;
@@ -74,6 +75,11 @@ pub fn gui(dirs: Dirs, args: Option<Vec<String>>) -> Result<(), MintError> {
         Box::new(|cc| Ok(Box::new(App::new(cc, dirs, args)?))),
     )
     .with_generic(|e| format!("{e}"))?;
+    // started by Steam: Steam counts the game as running while this process is
+    let game = autolaunch::GAME.lock().unwrap().take();
+    if let Some(mut game) = game {
+        let _ = game.wait();
+    }
     Ok(())
 }
 
@@ -174,6 +180,8 @@ pub struct App {
     remote_rid: Option<MessageHandle<()>>,
     /// publish or unpublish in flight
     publish_rid: Option<MessageHandle<()>>,
+    /// Started by Steam: install if needed, then start the game.
+    auto_launch: Option<autolaunch::AutoLaunch>,
 }
 
 /// What a button in the preset bar asked for.
@@ -445,7 +453,6 @@ impl App {
         let remote_presets = RemotePresets::load(&state.dirs.cache_dir.join(REMOTE_PRESETS_FILE));
 
         Ok(Self {
-            args,
             tx,
             rx,
             request_counter: Default::default(),
@@ -478,7 +485,44 @@ impl App {
             remote_presets,
             remote_rid: None,
             publish_rid: None,
+            auto_launch: args.is_some().then_some(autolaunch::AutoLaunch::Waiting),
+            args,
         })
+    }
+
+    /// What Install mods installs: the selected remote preset, or the active profile's enabled
+    /// mods, highest priority first.
+    fn install_specs(&self) -> Vec<ModSpecification> {
+        if let Some(preset) = self.selected_remote() {
+            return remote::install_specs(preset);
+        }
+        let mut mod_configs = Vec::new();
+        let active_profile = self.state.mod_data.active_profile.clone();
+        self.state
+            .mod_data
+            .for_each_enabled_mod(&active_profile, |mc| {
+                mod_configs.push(mc.clone());
+            });
+        mod_configs.sort_by_key(|k| -k.priority);
+        mod_configs.into_iter().map(|c| c.spec).collect()
+    }
+
+    fn start_install(&mut self, ctx: &egui::Context) {
+        let Some(fsd_pak) = self.state.config.drg_pak_path.clone() else {
+            return;
+        };
+        let mods = self.install_specs();
+        self.last_action = None;
+        self.integrate_rid = Some(message::Integrate::send(
+            &mut self.request_counter,
+            self.state.store.clone(),
+            mods,
+            fsd_pak,
+            self.state.config.deref().into(),
+            self.tx.clone(),
+            ctx.clone(),
+        ));
+        self.problematic_mod_id = None;
     }
 
     fn ui_profile(&mut self, ui: &mut Ui, profile: &str) {
@@ -2112,13 +2156,23 @@ impl eframe::App for App {
 
             debug!("restarting...");
             // same arguments: when started from Steam they hold the game's command line
-            let _child = std::process::Command::new(original_exe_path)
+            let mut child = std::process::Command::new(original_exe_path)
                 .args(std::env::args_os().skip(1))
                 .spawn()
                 .unwrap();
             debug!("created child process");
 
-            std::process::exit(0);
+            if self.args.is_none() {
+                std::process::exit(0);
+            }
+            // started by Steam, which tracks this process: hide, and leave with the new mint
+            self.auto_launch = None;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            std::thread::spawn(move || {
+                let _ = child.wait();
+                std::process::exit(0);
+            });
+            return;
         }
 
         // do some init things that depend on ctx so cannot be done earlier
@@ -2136,6 +2190,8 @@ impl eframe::App for App {
         while let Ok(msg) = self.rx.try_recv() {
             msg.handle(self);
         }
+
+        self.drive_auto_launch(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -2188,36 +2244,7 @@ impl eframe::App for App {
                             }
 
                             if button.clicked() {
-                                let mut mods = Vec::new();
-                                if let Some(preset) = self.selected_remote() {
-                                    mods = remote::install_specs(preset);
-                                } else {
-                                    let mut mod_configs = Vec::new();
-                                    let active_profile = self.state.mod_data.active_profile.clone();
-                                    self.state
-                                        .mod_data
-                                        .for_each_enabled_mod(&active_profile, |mc| {
-                                            mod_configs.push(mc.clone());
-                                        });
-
-                                    mod_configs.sort_by_key(|k| -k.priority);
-
-                                    for config in mod_configs {
-                                        mods.push(config.spec.clone());
-                                    }
-                                }
-
-                                self.last_action = None;
-                                self.integrate_rid = Some(message::Integrate::send(
-                                    &mut self.request_counter,
-                                    self.state.store.clone(),
-                                    mods,
-                                    self.state.config.drg_pak_path.as_ref().unwrap().clone(),
-                                    self.state.config.deref().into(),
-                                    self.tx.clone(),
-                                    ctx.clone(),
-                                ));
-                                self.problematic_mod_id = None;
+                                self.start_install(ctx);
                             }
                         });
 
@@ -2336,7 +2363,10 @@ impl eframe::App for App {
                     }
                 }
                 ui.with_layout(egui::Layout::left_to_right(Align::TOP), |ui| {
-                    if let Some(last_action) = &self.last_action {
+                    if self.auto_launch.is_some() {
+                        ui.spinner();
+                        ui.label("Getting the mods ready, then Deep Rock Galactic starts…");
+                    } else if let Some(last_action) = &self.last_action {
                         let msg = match &last_action.status {
                             LastActionStatus::Success(msg) => {
                                 ui.label(

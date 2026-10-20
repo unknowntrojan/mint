@@ -199,6 +199,7 @@ impl Integrate {
                 Ok(()) => {
                     info!("integration complete");
                     app.last_action = Some(LastAction::success("integration complete".to_string()));
+                    app.record_install();
                 }
                 Err(ref e)
                     if let IntegrationError::ProviderError { source } = e

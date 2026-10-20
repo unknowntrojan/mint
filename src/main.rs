@@ -63,6 +63,8 @@ struct ActionIntegrateProfile {
 /// Launch via steam
 #[derive(Parser, Debug)]
 struct ActionLaunch {
+    /// The game's command line, Steam's `%command%` and DRG's options after it
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
     args: Vec<String>,
 }
 

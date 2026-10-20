@@ -21,8 +21,9 @@ First time:
 4. Start mint (Start Menu / Desktop / app menu), pick a profile, click "Install mods".
    DRG must be closed while installing/uninstalling mods.
 
-Updating mint later: download only the new mint-installer zip, extract it, run the installer
-again. Your mods and modlists stay as they are; the mods zip is only imported the first time.
+Updating: mint updates itself. When there's a new version it downloads it on start and
+restarts by itself. Running a newer installer again also works: your mods and modlists stay as
+they are; the mods zip is only imported the first time.
 
 Any existing mint setup is renamed to *.bak-<timestamp>, not deleted.
 To go back to the official mod integration: "Uninstall mods" in mint, then start DRG normally.

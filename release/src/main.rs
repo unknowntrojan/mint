@@ -1,6 +1,7 @@
-//! Signs and publishes mint releases; see `release.sh` and `server/README.md`.
+//! Signs and publishes mint releases, and seeds the server's mod mirror; see `release.sh` and
+//! `server/README.md`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -9,7 +10,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail, ensure};
 use ed25519_dalek::SigningKey;
-use remote_preset::release::{LINUX, Manifest, PUBLIC_KEY, ReleaseFile, SignedManifest, WINDOWS};
+use remote_preset::release::{
+    LINUX, MAX_FILE_SIZE, Manifest, PUBLIC_KEY, ReleaseFile, SignedManifest, WINDOWS,
+};
 use sha2::{Digest, Sha256};
 
 const USAGE: &str = "\
@@ -21,6 +24,8 @@ usage:
                                       upload and publish release <n>
   mint_release download <dir>         download and verify the latest release into <dir>
                                       (mint, mint.exe); prints its number
+  mint_release seed-mods              upload the mod.io files in mint's cache that the server's
+                                      mod mirror doesn't have yet
 
 environment:
   MINT_RELEASE_KEY   signing key file (default ~/.local/share/mint-release/signing.key)
@@ -43,6 +48,7 @@ fn main() -> Result<()> {
             notes.first().copied().unwrap_or_default(),
         ),
         ["download", dir] => download(Path::new(dir)),
+        ["seed-mods"] => seed_mods(),
         _ => bail!("{USAGE}"),
     }
 }
@@ -64,13 +70,18 @@ fn key_path() -> Result<PathBuf> {
     Ok(data.join("mint-release/signing.key"))
 }
 
+/// `$XDG_<var>_HOME/mint`, or `~/<fallback>/mint`.
+fn mint_dir(var: &str, fallback: &str) -> Result<PathBuf> {
+    let base = match std::env::var_os(var) {
+        Some(d) => PathBuf::from(d),
+        None => home()?.join(fallback),
+    };
+    Ok(base.join("mint"))
+}
+
 /// mint's config.json, for the server URL and publish key.
 fn mint_config() -> Result<serde_json::Value> {
-    let config = match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(d) => PathBuf::from(d),
-        None => home()?.join(".config"),
-    };
-    let path = config.join("mint/config.json");
+    let path = mint_dir("XDG_CONFIG_HOME", ".config")?.join("config.json");
     let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
     Ok(serde_json::from_slice(&bytes)?)
 }
@@ -263,5 +274,90 @@ fn download(dir: &Path) -> Result<()> {
         fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
     }
     println!("{}", manifest.release);
+    Ok(())
+}
+
+/// Uploads every cached mod.io file the server lacks. Files over Cloudflare's limit are left to
+/// the server, which downloads them from mod.io itself.
+fn seed_mods() -> Result<()> {
+    let server = server()?;
+    let token = publish_key()?;
+    let client = client()?;
+    let cache_dir = mint_dir("XDG_CACHE_HOME", ".cache")?;
+    let path = cache_dir.join("cache.json");
+    let cache: serde_json::Value = serde_json::from_slice(
+        &fs::read(&path).with_context(|| format!("reading {}", path.display()))?,
+    )?;
+    let modio = &cache["cache"]["modio"];
+
+    let mut mod_of = HashMap::new();
+    for (mod_id, m) in modio["mods"].as_object().into_iter().flatten() {
+        let mod_id: u64 = mod_id.parse()?;
+        for file in m["modfiles"].as_array().into_iter().flatten() {
+            if let Some(id) = file["id"].as_u64() {
+                mod_of.insert(id, mod_id);
+            }
+        }
+    }
+    let mirrored: Vec<serde_json::Value> =
+        check(client.get(format!("{server}/api/v1/mods")).send()?)?.json()?;
+    let mirrored: HashSet<(u64, u64)> = mirrored
+        .iter()
+        .filter_map(|f| Some((f["mod_id"].as_u64()?, f["modfile_id"].as_u64()?)))
+        .collect();
+
+    let mut blobs: Vec<(u64, &str)> = modio["modfile_blobs"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(id, blob)| Some((id.parse().ok()?, blob.as_str()?)))
+        .collect();
+    blobs.sort();
+    let (mut uploaded, mut bytes, mut present) = (0, 0, 0);
+    let mut skipped = Vec::new();
+    for (modfile_id, blob) in blobs {
+        let Some(&mod_id) = mod_of.get(&modfile_id) else {
+            skipped.push(format!("file {modfile_id}: no mod in the cache lists it"));
+            continue;
+        };
+        if mirrored.contains(&(mod_id, modfile_id)) {
+            present += 1;
+            continue;
+        }
+        let path = cache_dir.join("blobs").join(blob);
+        let Ok(size) = fs::metadata(&path).map(|m| m.len()) else {
+            continue; // listed in cache.json, but not downloaded
+        };
+        if size > MAX_FILE_SIZE {
+            skipped.push(format!(
+                "mod {mod_id} file {modfile_id}: {:.0} MB, too large to upload; the server \
+                 downloads it from mod.io",
+                size as f64 / 1e6
+            ));
+            continue;
+        }
+        eprintln!(
+            "uploading mod {mod_id} file {modfile_id} ({:.1} MB)",
+            size as f64 / 1e6
+        );
+        check(
+            client
+                .put(format!("{server}/api/v1/mods/{mod_id}/files/{modfile_id}"))
+                .query(&[("sha256", blob)])
+                .bearer_auth(&token)
+                .body(fs::File::open(&path)?)
+                .send()?,
+        )?;
+        uploaded += 1;
+        bytes += size;
+    }
+    for s in &skipped {
+        eprintln!("skipped {s}");
+    }
+    println!(
+        "uploaded {uploaded} files ({:.0} MB) to {server}; {present} were there already, {} skipped",
+        bytes as f64 / 1e6,
+        skipped.len()
+    );
     Ok(())
 }

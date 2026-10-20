@@ -247,6 +247,22 @@ fn init_provider(
     Ok(state.store.add_provider(factory, params)?)
 }
 
+fn check_profile(state: &State, profile: &str) -> Result<()> {
+    if state.mod_data.profiles.contains_key(profile) {
+        return Ok(());
+    }
+    let names: Vec<_> = state
+        .mod_data
+        .profiles
+        .keys()
+        .map(|p| format!("{p:?}"))
+        .collect();
+    Err(anyhow!(
+        "no profile named {profile:?}; there are {}",
+        names.join(", ")
+    ))
+}
+
 fn get_pak_path(state: &State, arg: &Option<PathBuf>) -> Result<PathBuf> {
     arg.as_ref()
         .or_else(|| state.config.drg_pak_path.as_ref())
@@ -278,6 +294,7 @@ async fn action_integrate(dirs: Dirs, action: ActionIntegrate) -> Result<()> {
 
 async fn action_integrate_profile(dirs: Dirs, action: ActionIntegrateProfile) -> Result<()> {
     let mut state = State::init(dirs)?;
+    check_profile(&state, &action.profile)?;
     let game_pak_path = get_pak_path(&state, &action.fsd_pak)?;
     debug!(?game_pak_path);
 
@@ -299,6 +316,7 @@ async fn action_integrate_profile(dirs: Dirs, action: ActionIntegrateProfile) ->
 
 async fn action_lint(dirs: Dirs, action: ActionLint) -> Result<()> {
     let mut state = State::init(dirs)?;
+    check_profile(&state, &action.profile)?;
     let game_pak_path = get_pak_path(&state, &action.fsd_pak)?;
     debug!(?game_pak_path);
 

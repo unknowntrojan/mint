@@ -58,9 +58,11 @@ mint falls back to mod.io.
   checks it against mod.io's MD5 and size, and keeps it. Only for mods that a published preset
   lists, so the public endpoint isn't a mod.io proxy for anyone. Without the token it serves only
   uploaded files.
-- **Seeding:** `mint_release seed-mods` uploads every file in your mint cache that the server
-  doesn't have, checked against the SHA-256 mint stores it under. Files over 95 MB don't fit
-  through Cloudflare and are skipped; the server fetches those from mod.io itself.
+- **Seeding:** `server/seed-mods.sh` copies every file in your mint cache that the mirror
+  doesn't have straight into `data/mods/` over ssh (LAN speed, any size), checked against the
+  SHA-256 mint stores it under. Away from the LAN, `mint_release seed-mods` uploads through the
+  API instead; files over 95 MB don't fit through Cloudflare there and are left to the server,
+  which fetches them from mod.io itself.
 - **Fallback:** if the server can't be reached, mint uses mod.io for the rest of the session; a
   file the server doesn't have (404) goes to mod.io right away.
 - Nothing is ever deleted; the mirror grows with every new mod version (~520 MB for the current

@@ -4,6 +4,7 @@ pub mod integrate;
 pub mod mod_lints;
 pub mod providers;
 pub mod remote;
+pub mod setup;
 pub mod state;
 pub mod update;
 

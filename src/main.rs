@@ -98,6 +98,10 @@ struct Args {
     /// Location to store configs and data
     #[arg(long)]
     appdata: Option<PathBuf>,
+
+    /// Print the release this build is (`none` for others) and exit; setup asks installed mints.
+    #[arg(long, hide = true)]
+    release_number: bool,
 }
 
 /// Run from a terminal with a subcommand, a GUI-subsystem mint prints into that terminal. The
@@ -161,6 +165,13 @@ fn main() -> Result<()> {
     #[cfg(all(windows, not(debug_assertions)))]
     attach_parent_console();
 
+    // a setup binary started like a program sets mint up, or starts the installed one
+    if std::env::args_os().len() == 1
+        && let Some(payload) = mint::setup::Payload::of_current_exe()
+    {
+        return mint::setup::run(payload).inspect_err(mint::setup::error_dialog);
+    }
+
     #[cfg(target_os = "windows")]
     {
         // Try to enable ANSI code support on Windows 10 for console. If it fails, then whatever
@@ -169,6 +180,13 @@ fn main() -> Result<()> {
     }
 
     let args = Args::parse();
+    if args.release_number {
+        println!(
+            "{}",
+            mint::update::RELEASE.map_or("none".into(), |n| n.to_string())
+        );
+        return Ok(());
+    }
 
     let dirs = args
         .appdata

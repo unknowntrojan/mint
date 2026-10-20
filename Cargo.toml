@@ -116,11 +116,12 @@ hook = { path = "hook", artifact = "cdylib", optional = true, target = "x86_64-p
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 hook = { path = "hook", artifact = "cdylib", optional = true, target = "x86_64-pc-windows-gnu" }
 [target.'cfg(windows)'.dependencies]
-# main.rs: attach the CLI to the terminal it was started from
+# main.rs: attach the CLI to the terminal it was started from; setup: is Steam running
 windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
   "Win32_Storage_FileSystem",
   "Win32_System_Console",
+  "Win32_System_Diagnostics_ToolHelp",
 ] }
 
 # release.sh builds releases with this profile

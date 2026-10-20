@@ -61,10 +61,16 @@ use request_counter::{RequestCounter, RequestID};
 use self::toggle_switch::toggle_switch;
 
 pub fn gui(dirs: Dirs, args: Option<Vec<String>>) -> Result<(), MintError> {
+    // started by Steam: the small Play chooser first
+    let size = if args.is_some() {
+        [580.0, 330.0]
+    } else {
+        [900.0, 500.0]
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("mint pint")
-            .with_inner_size([900.0, 500.0])
+            .with_inner_size(size)
             .with_drag_and_drop(true),
         ..Default::default()
     };
@@ -180,8 +186,10 @@ pub struct App {
     remote_rid: Option<MessageHandle<()>>,
     /// publish or unpublish in flight
     publish_rid: Option<MessageHandle<()>>,
-    /// Started by Steam: install if needed, then start the game.
-    auto_launch: Option<autolaunch::AutoLaunch>,
+    /// Started by Steam: the Play chooser, shown instead of the mod manager until it's opened.
+    chooser: Option<autolaunch::Chooser>,
+    /// Whether the preset server answered the last time remote presets were fetched.
+    server_ok: Option<bool>,
 }
 
 /// What a button in the preset bar asked for.
@@ -485,7 +493,8 @@ impl App {
             remote_presets,
             remote_rid: None,
             publish_rid: None,
-            auto_launch: args.is_some().then_some(autolaunch::AutoLaunch::Waiting),
+            chooser: args.is_some().then(autolaunch::Chooser::new),
+            server_ok: None,
             args,
         })
     }
@@ -505,6 +514,34 @@ impl App {
             });
         mod_configs.sort_by_key(|k| -k.priority);
         mod_configs.into_iter().map(|c| c.spec).collect()
+    }
+
+    /// Takes the mods out of the game: mods_P.pak, the hook, and the selected mods' mod.io
+    /// installs.
+    fn uninstall_mods(&mut self) -> Result<(), String> {
+        let Some(pak_path) = self.state.config.drg_pak_path.clone() else {
+            return Err("Deep Rock Galactic isn't set".into());
+        };
+        let mut mods = HashSet::default();
+        if let Some(preset) = self.selected_remote() {
+            mods.extend(preset.mods.iter().filter(|m| m.enabled).map(|m| m.mod_id));
+        } else {
+            let active_profile = self.state.mod_data.active_profile.clone();
+            self.state
+                .mod_data
+                .for_each_enabled_mod(&active_profile, |mc| {
+                    if let Some(modio_id) = self
+                        .state
+                        .store
+                        .get_mod_info(&mc.spec)
+                        .and_then(|i| i.modio_id)
+                    {
+                        mods.insert(modio_id);
+                    }
+                });
+        }
+        debug!("uninstalling mods: pak_path = {}", pak_path.display());
+        uninstall(&pak_path, mods).map_err(|e| e.to_string())
     }
 
     fn start_install(&mut self, ctx: &egui::Context) {
@@ -2166,7 +2203,7 @@ impl eframe::App for App {
                 std::process::exit(0);
             }
             // started by Steam, which tracks this process: hide, and leave with the new mint
-            self.auto_launch = None;
+            self.chooser = None;
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             std::thread::spawn(move || {
                 let _ = child.wait();
@@ -2191,7 +2228,7 @@ impl eframe::App for App {
             msg.handle(self);
         }
 
-        self.drive_auto_launch(ctx);
+        self.drive_chooser(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -2199,6 +2236,10 @@ impl eframe::App for App {
 
         self.show_update_window(ctx);
         self.show_provider_parameters(ctx);
+        if self.chooser.is_some() {
+            self.ui_chooser(ui);
+            return;
+        }
         self.show_profile_windows(ctx);
         self.show_settings(ctx);
         self.show_lints_toggle(ctx);
@@ -2256,40 +2297,14 @@ impl eframe::App for App {
                                 );
                             }
                             if button.clicked() {
-                                self.last_action = None;
-                                if let Some(pak_path) = &self.state.config.drg_pak_path {
-                                    let mut mods = HashSet::default();
-                                    let active_profile = self.state.mod_data.active_profile.clone();
-                                    if let Some(preset) = self.selected_remote() {
-                                        mods.extend(
-                                            preset.mods.iter().filter(|m| m.enabled).map(|m| m.mod_id),
-                                        );
-                                    } else {
-                                    self.state.mod_data.for_each_enabled_mod(
-                                        &active_profile,
-                                        |mc| {
-                                            if let Some(modio_id) = self
-                                                .state
-                                                .store
-                                                .get_mod_info(&mc.spec)
-                                                .and_then(|i| i.modio_id)
-                                            {
-                                                mods.insert(modio_id);
-                                            }
-                                        },
-                                    );
+                                self.last_action = Some(match self.uninstall_mods() {
+                                    Ok(()) => LastAction::success(
+                                        "Successfully uninstalled mods".to_string(),
+                                    ),
+                                    Err(e) => {
+                                        LastAction::failure(format!("Failed to uninstall mods: {e}"))
                                     }
-
-                                    debug!("uninstalling mods: pak_path = {}", pak_path.display());
-                                    self.last_action = Some(match uninstall(pak_path, mods) {
-                                        Ok(()) => LastAction::success(
-                                            "Successfully uninstalled mods".to_string(),
-                                        ),
-                                        Err(e) => LastAction::failure(format!(
-                                            "Failed to uninstall mods: {e}"
-                                        )),
-                                    })
-                                }
+                                });
                             }
                         });
 
@@ -2363,10 +2378,7 @@ impl eframe::App for App {
                     }
                 }
                 ui.with_layout(egui::Layout::left_to_right(Align::TOP), |ui| {
-                    if self.auto_launch.is_some() {
-                        ui.spinner();
-                        ui.label("Getting the mods ready, then Deep Rock Galactic starts…");
-                    } else if let Some(last_action) = &self.last_action {
+                    if let Some(last_action) = &self.last_action {
                         let msg = match &last_action.status {
                             LastActionStatus::Success(msg) => {
                                 ui.label(

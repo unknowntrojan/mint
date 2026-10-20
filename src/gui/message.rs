@@ -509,6 +509,7 @@ impl FetchRemotePresets {
             return;
         }
         app.remote_rid = None;
+        app.server_ok = Some(self.result.is_ok());
         match self.result {
             Ok(presets) => {
                 if let Err(e) = presets.save(&app.remote_presets_path()) {

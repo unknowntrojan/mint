@@ -1,7 +1,8 @@
 # mint_server
 
-Hosts mod presets that mint shows as `[Remote] <name>`, and mint releases that release builds
-update themselves to. Publishers upload with a publish key; everyone else only reads.
+Hosts mod presets that mint shows as `[Remote] <name>`, mint releases that release builds
+update themselves to, and a mirror of mod.io mod files that mint downloads from before asking
+mod.io. Publishers upload with a publish key; everyone else only reads.
 
 ## Deploy
 
@@ -14,7 +15,8 @@ registry) and starts it from `/data/docker/mint/`:
 
 ```
 docker-compose.yml   copied from this directory on every deploy (previous one: .bak)
-.env                 TUNNEL_TOKEN=…; created empty on the first deploy, never overwritten
+.env                 TUNNEL_TOKEN=…, MINT_MODIO_TOKEN=…; created empty on the first deploy,
+                     never overwritten
 data/                presets and publish keys, owned by uid 10001 (the container's user)
 ```
 
@@ -43,6 +45,26 @@ prints a key (shown once; it goes into mint's Settings → Publish key) and a li
 `alex 3f2a…` to append to `data/keys`. The file stores only SHA-256 hashes of keys, so it can't
 be used to publish. It is re-read on every publish: adding or removing a line takes effect
 without a restart. Without a `data/keys` file nobody can publish.
+
+## Mod mirror
+
+mint looks for a mod file in its own cache, then on this server (`preset_server`, so friends need
+no setup), then on mod.io. Files are stored per mod.io modfile ID; a modfile never changes, so
+neither does its file here. An updated mod is a new modfile: the server has it, fetches it, or
+mint falls back to mod.io.
+
+- **Fetching:** with `MINT_MODIO_TOKEN` (a mod.io OAuth token, e.g. the one in mint's config) in
+  `.env`, the server downloads a missing file from mod.io the first time someone asks for it,
+  checks it against mod.io's MD5 and size, and keeps it. Only for mods that a published preset
+  lists, so the public endpoint isn't a mod.io proxy for anyone. Without the token it serves only
+  uploaded files.
+- **Seeding:** `mint_release seed-mods` uploads every file in your mint cache that the server
+  doesn't have, checked against the SHA-256 mint stores it under. Files over 95 MB don't fit
+  through Cloudflare and are skipped; the server fetches those from mod.io itself.
+- **Fallback:** if the server can't be reached, mint uses mod.io for the rest of the session; a
+  file the server doesn't have (404) goes to mod.io right away.
+- Nothing is ever deleted; the mirror grows with every new mod version (~520 MB for the current
+  cache). Delete `data/mods/<mod>/` by hand to drop a mod; it's fetched again when asked for.
 
 ## Releases
 
@@ -75,6 +97,7 @@ data/keys                            publish keys (hashes)
 data/presets/<slug>/<revision>.json  every published revision, never modified
 data/deleted/<slug>-<unix time>/     unpublished presets, kept
 data/releases/<n>/                   binaries of release n, plus manifest.json once published
+data/mods/<mod>/<modfile>            mirrored mod file, with <modfile>.json (size, sha256)
 ```
 
 Releases take ~50 MB each; delete old `data/releases/<n>/` directories by hand if space matters
@@ -87,6 +110,7 @@ newest revision.
 
 ```sh
 MINT_SERVER_DATA=./data MINT_SERVER_LISTEN=127.0.0.1:8080 cargo run -p mint_server
+# optional: MINT_MODIO_TOKEN=… to let it fetch mod files from mod.io
 ```
 
 ## API
@@ -102,6 +126,9 @@ MINT_SERVER_DATA=./data MINT_SERVER_LISTEN=127.0.0.1:8080 cargo run -p mint_serv
 | `PUT /api/v1/releases/{n}/files/{name}` | `Bearer <key>` | upload a binary of unpublished release n (≤ 95 MB, streamed) |
 | `PUT /api/v1/releases/{n}` | `Bearer <key>` | publish release n: the signed manifest; its files must be uploaded |
 | `GET /api/v1/releases/{n}/files/{name}` | | a binary of a published release, cacheable forever |
+| `GET /api/v1/mods` | | every mirrored mod file (`mod_id`, `modfile_id`, `size`, `sha256`) |
+| `GET /api/v1/mods/{mod}/files/{modfile}` | | a mod.io file (`x-sha256` header); fetched from mod.io first if missing and a preset lists the mod; cacheable forever |
+| `PUT /api/v1/mods/{mod}/files/{modfile}?sha256=…` | `Bearer <key>` | upload a mod.io file (≤ 95 MB, streamed); a file that's there already is kept |
 | `GET /health` | | `ok` |
 
 The formats are defined in `remote_preset/`. Preset uploads are limited to 512 KiB and 2000 mods

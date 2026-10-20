@@ -1450,7 +1450,7 @@ impl App {
                                 window.preset_server_err = None;
                             }
                             if res.lost_focus() {
-                                window.apply_remote(&mut self.state.config);
+                                window.apply_remote(&mut self.state.config, &self.state.store);
                             }
                             if let Some(error) = &window.preset_server_err {
                                 ui.colored_label(ui.visuals().error_fg_color, error);
@@ -1469,7 +1469,7 @@ impl App {
                                     .desired_width(200.0),
                             );
                             if res.lost_focus() {
-                                window.apply_remote(&mut self.state.config);
+                                window.apply_remote(&mut self.state.config, &self.state.store);
                             }
                             ui.toggle_value(&mut window.show_publish_key, "show");
                         });
@@ -1502,7 +1502,7 @@ impl App {
 
                 });
             if try_save || !open {
-                window.apply_remote(&mut self.state.config);
+                window.apply_remote(&mut self.state.config, &self.state.store);
             }
             if try_save {
                 if let Err(e) = is_drg_pak(&window.drg_pak_path) {
@@ -2066,7 +2066,11 @@ impl WindowSettings {
 
     /// Saves the preset server and publish key if they changed. An invalid server URL is
     /// reported and left unsaved.
-    fn apply_remote(&mut self, config: &mut ConfigWrapper<VersionAnnotatedConfig>) {
+    fn apply_remote(
+        &mut self,
+        config: &mut ConfigWrapper<VersionAnnotatedConfig>,
+        store: &ModStore,
+    ) {
         let mut changed = false;
 
         let server = self.preset_server.trim().trim_end_matches('/');
@@ -2089,6 +2093,7 @@ impl WindowSettings {
 
         if changed {
             config.save().unwrap();
+            store.set_mirror(Some(config.preset_server()));
         }
     }
 }

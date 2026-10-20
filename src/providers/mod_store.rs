@@ -11,6 +11,8 @@ pub struct ModStore {
     providers: Providers,
     cache: ProviderCache,
     blob_cache: BlobCache,
+    /// Asked for mod.io files before mod.io.
+    mirror: RwLock<Option<Arc<crate::providers::modio::Mirror>>>,
 }
 
 impl ModStore {
@@ -42,7 +44,17 @@ impl ModStore {
             providers: RwLock::new(providers),
             cache: Arc::new(RwLock::new(cache)),
             blob_cache: BlobCache::new(cache_path.as_ref().join("blobs")),
+            mirror: RwLock::new(None),
         })
+    }
+
+    /// The preset server whose mod mirror to use, if any.
+    pub fn set_mirror(&self, server: Option<&str>) {
+        let mut mirror = self.mirror.write().unwrap();
+        let server = server.map(|s| s.trim_end_matches('/'));
+        if mirror.as_ref().map(|m| m.server()) != server {
+            *mirror = server.map(|s| Arc::new(crate::providers::modio::Mirror::new(s)));
+        }
     }
 
     pub fn get_provider_factories() -> impl Iterator<Item = &'static ProviderFactory> {
@@ -195,6 +207,14 @@ impl ModStore {
         update: bool,
         tx: Option<Sender<FetchProgress>>,
     ) -> Result<PathBuf, ProviderError> {
+        let mirror = self.mirror.read().unwrap().clone();
+        if let Some(mirror) = mirror
+            && let Some(path) = mirror
+                .fetch(res, self.cache.clone(), &self.blob_cache, tx.clone())
+                .await
+        {
+            return Ok(path);
+        }
         self.get_provider(&res.url.0)?
             .fetch_mod(
                 res,

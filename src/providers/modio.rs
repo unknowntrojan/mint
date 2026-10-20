@@ -1042,6 +1042,156 @@ fn process_modio_tags(set: &HashSet<String>) -> ModioTags {
     }
 }
 
+/// mod.io files mirrored on mint's preset server (`/api/v1/mods/{mod}/files/{modfile}`), which
+/// downloads them from mod.io once for everyone. Asked before mod.io; anything it can't do falls
+/// back to mod.io.
+pub struct Mirror {
+    base: String,
+    client: reqwest::Client,
+    /// Set when the server can't be reached; then it isn't asked again this session.
+    down: std::sync::atomic::AtomicBool,
+}
+
+impl Mirror {
+    pub fn new(server: &str) -> Self {
+        let client = reqwest::Client::builder()
+            .user_agent(concat!("mint/", env!("CARGO_PKG_VERSION")))
+            .connect_timeout(std::time::Duration::from_secs(5))
+            // the server may first download the file from mod.io itself
+            .read_timeout(std::time::Duration::from_secs(300))
+            .build()
+            .expect("reqwest client");
+        Self {
+            base: server.trim_end_matches('/').to_string(),
+            client,
+            down: Default::default(),
+        }
+    }
+
+    pub fn server(&self) -> &str {
+        &self.base
+    }
+
+    /// Downloads a mod.io file into the blob cache. `None` if it's no mod.io file, is cached
+    /// already, or the mirror doesn't have it or fails; the provider takes over then.
+    pub async fn fetch(
+        &self,
+        res: &ModResolution,
+        cache: ProviderCache,
+        blob_cache: &BlobCache,
+        tx: Option<Sender<FetchProgress>>,
+    ) -> Option<PathBuf> {
+        use std::sync::atomic::Ordering;
+
+        use futures::StreamExt;
+        use sha2::{Digest, Sha256};
+
+        let ModIoModUrl {
+            mod_id: Some(mod_id),
+            modfile_id: Some(modfile_id),
+            ..
+        } = parse_url(&res.url.0).ok()?
+        else {
+            return None;
+        };
+        let cached = cache
+            .read()
+            .unwrap()
+            .get::<ModioCache>(MODIO_PROVIDER_ID)
+            .and_then(|c| c.modfile_blobs.get(&modfile_id))
+            .and_then(|r| blob_cache.get_path(r))
+            .is_some();
+        if cached || self.down.load(Ordering::Relaxed) {
+            return None;
+        }
+
+        let url = format!("{}/api/v1/mods/{mod_id}/files/{modfile_id}", self.base);
+        let response = match self.client.get(&url).send().await {
+            Ok(r) => r,
+            Err(e) if e.is_connect() || e.is_timeout() => {
+                // parallel downloads fail together; say it once
+                if self.down.swap(true, Ordering::Relaxed) {
+                    debug!("{url}: {e}");
+                } else {
+                    warn!("mod mirror {} unreachable, using mod.io: {e}", self.base);
+                }
+                return None;
+            }
+            Err(e) => {
+                warn!("{url}: {e}");
+                return None;
+            }
+        };
+        match response.status() {
+            reqwest::StatusCode::OK => {}
+            reqwest::StatusCode::NOT_FOUND => {
+                debug!("{url}: not mirrored");
+                return None;
+            }
+            status => {
+                warn!("{url}: {status}");
+                return None;
+            }
+        }
+        let expected = response
+            .headers()
+            .get("x-sha256")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_ascii_lowercase);
+        let size = response.content_length().unwrap_or(0);
+
+        info!("downloading mod {mod_id} file {modfile_id} from the mirror");
+        let mut data = Vec::with_capacity(size as usize);
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(chunk) => data.extend_from_slice(&chunk),
+                Err(e) => {
+                    warn!("{url}: {e}");
+                    return None;
+                }
+            }
+            if let Some(tx) = &tx {
+                tx.send(FetchProgress::Progress {
+                    resolution: res.clone(),
+                    progress: data.len() as u64,
+                    size,
+                })
+                .await
+                .unwrap();
+            }
+        }
+        let sha256 = hex::encode(Sha256::digest(&data));
+        if expected.as_deref() != Some(sha256.as_str()) {
+            warn!("{url}: content doesn't match its x-sha256 header ({expected:?})");
+            return None;
+        }
+
+        let blob = match blob_cache.write(&data) {
+            Ok(blob) => blob,
+            Err(e) => {
+                warn!("{url}: {e}");
+                return None;
+            }
+        };
+        let path = blob_cache.get_path(&blob)?;
+        cache
+            .write()
+            .unwrap()
+            .get_mut::<ModioCache>(MODIO_PROVIDER_ID)
+            .modfile_blobs
+            .insert(modfile_id, blob);
+        if let Some(tx) = tx {
+            tx.send(FetchProgress::Complete {
+                resolution: res.clone(),
+            })
+            .await
+            .unwrap();
+        }
+        Some(path)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

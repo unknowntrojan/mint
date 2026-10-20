@@ -418,7 +418,9 @@ impl State {
         let mod_data = ConfigWrapper::<VersionAnnotatedModData>::new(mod_data_path, mod_data);
         mod_data.save().unwrap();
 
-        let store = ModStore::new(&dirs.cache_dir, &config.provider_parameters)?.into();
+        let store: Arc<ModStore> =
+            ModStore::new(&dirs.cache_dir, &config.provider_parameters)?.into();
+        store.set_mirror(Some(config.preset_server()));
 
         Ok(Self {
             dirs,

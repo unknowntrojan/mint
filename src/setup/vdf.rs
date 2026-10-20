@@ -139,7 +139,9 @@ pub fn set_launch_options(
 pub fn with_wrapper(current: &str, wrapper: &str) -> String {
     static EARLIER: OnceLock<regex::Regex> = OnceLock::new();
     let earlier = EARLIER.get_or_init(|| {
-        regex::Regex::new(r#""[^"]*mint(?:-launch)?(?:\.exe)?"(?:\s+launch)?\s+%command%"#).unwrap()
+        // Windows paths aren't case-sensitive
+        regex::Regex::new(r#"(?i)"[^"]*mint(?:-launch)?(?:\.exe)?"(?:\s+launch)?\s+%command%"#)
+            .unwrap()
     });
     let current = earlier.replace(current.trim(), "%command%");
     // without %command%, Steam passes the options to the game
@@ -264,6 +266,10 @@ mod tests {
         );
         assert_eq!(
             m(r#""C:\old\mint.exe" launch %command% -dx11"#),
+            format!("{w} -dx11 -disablemodding -nosplash")
+        );
+        assert_eq!(
+            m(r#""C:\Tools\MINT.EXE" LAUNCH %command% -dx11"#),
             format!("{w} -dx11 -disablemodding -nosplash")
         );
         // Linux starts mint directly; switching replaces the launcher too

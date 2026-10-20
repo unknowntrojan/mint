@@ -53,12 +53,18 @@ pub fn ensure_launcher(dir: &Path) -> io::Result<()> {
         if fs::read(&path).is_ok_and(|b| b == LAUNCHER_BIN) {
             return Ok(());
         }
-        if path.exists() && fs::remove_file(&path).is_err() {
-            fs::rename(&path, &old)?;
-        }
+        // the new one is complete before the old one goes: Steam can't start DRG without one
         let tmp = dir.join(format!(".{LAUNCHER}.new"));
         fs::write(&tmp, LAUNCHER_BIN)?;
-        fs::rename(&tmp, &path)?;
+        if fs::rename(&tmp, &path).is_err() {
+            // a running launcher can't be replaced, but it can be renamed
+            fs::rename(&path, &old)?;
+            if let Err(e) = fs::rename(&tmp, &path) {
+                let _ = fs::rename(&old, &path);
+                let _ = fs::remove_file(&tmp);
+                return Err(e);
+            }
+        }
         info!("wrote {}", path.display());
     }
     #[cfg(not(windows))]
@@ -100,8 +106,9 @@ impl Payload {
             return Ok(None);
         }
         let zip_len = u64::from_le_bytes(trailer[..8].try_into().unwrap());
-        let exe_len = len
-            .checked_sub(16 + zip_len)
+        let exe_len = zip_len
+            .checked_add(16)
+            .and_then(|n| len.checked_sub(n))
             .ok_or_else(|| io::Error::other("payload longer than the file"))?;
         f.seek(SeekFrom::Start(exe_len))?;
         let mut zip = vec![0; zip_len as usize];
@@ -196,6 +203,16 @@ impl Paths {
         self.marker().exists()
     }
 
+    /// Whether DRG's launch options should go through mint: not if Steam was skipped during
+    /// setup. Markers from install.ps1/install.sh (empty files) predate the choice.
+    pub fn steam_launch_wanted(&self) -> bool {
+        fs::read(self.marker())
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|m| m["steam_launch"].as_bool())
+            .unwrap_or(true)
+    }
+
     /// Whether there's a mint setup that importing would move aside.
     pub fn previous_setup(&self) -> bool {
         !self.set_up_before()
@@ -243,6 +260,11 @@ pub fn check_pak(pak: &Path) -> Result<bool> {
 /// Whether Steam runs. It rewrites its config on exit, so launch options can't change meanwhile.
 pub fn steam_running() -> bool {
     process_running(if cfg!(windows) { "steam.exe" } else { "steam" })
+}
+
+/// Whether mint runs. It saves its config when it exits, over anything imported meanwhile.
+pub fn mint_running() -> bool {
+    process_running(EXE)
 }
 
 #[cfg(windows)]
@@ -351,17 +373,31 @@ pub fn install_exe(payload: &Payload, paths: &Paths) -> io::Result<Option<String
             ),
         ));
     }
-    // mint loads Oodle (some mods need it) from next to itself and never downloads it
-    fs::write(paths.install_dir.join(OODLE), payload.file(OODLE)?)?;
-    ensure_launcher(&paths.install_dir)?;
     let what = crate::update::describe();
     info!("installed {} ({what})", target.display());
     Ok(Some(format!("Installed mint ({what})")))
 }
 
+/// What has to sit next to mint whether or not mint itself was replaced: Oodle (some mods need it;
+/// mint never downloads it) and, on Windows, the launcher Steam starts.
+pub fn install_support(payload: &Payload, paths: &Paths) -> io::Result<()> {
+    let oodle = paths.install_dir.join(OODLE);
+    // a running mint has it loaded, so only when it's missing
+    if !oodle.exists() {
+        fs::write(&oodle, payload.file(OODLE)?)?;
+    }
+    ensure_launcher(&paths.install_dir)
+}
+
 /// Imports config, profiles and mod metadata, after moving any earlier mint setup aside. `pak`
-/// is DRG's main pak, if known.
-pub fn import(payload: &Payload, paths: &Paths, pak: Option<&Path>) -> io::Result<Vec<String>> {
+/// is DRG's main pak, if known; `steam` whether DRG's launch options go through mint, which
+/// later runs respect.
+pub fn import(
+    payload: &Payload,
+    paths: &Paths,
+    pak: Option<&Path>,
+    steam: bool,
+) -> io::Result<Vec<String>> {
     let ts = now();
     let mut done = Vec::new();
     for dir in paths
@@ -382,7 +418,15 @@ pub fn import(payload: &Payload, paths: &Paths, pak: Option<&Path>) -> io::Resul
     fs::create_dir_all(&paths.cache_dir)?;
 
     let mut config: serde_json::Value = serde_json::from_slice(payload.file("config.json")?)?;
-    config["drg_pak_path"] = pak.map(|p| p.to_string_lossy().into_owned()).into();
+    let Some(fields) = config.as_object_mut() else {
+        return Err(io::Error::other(
+            "the setup file's config.json isn't an object",
+        ));
+    };
+    fields.insert(
+        "drg_pak_path".into(),
+        pak.map(|p| p.to_string_lossy().into_owned()).into(),
+    );
     write_private(
         &paths.config_dir.join("config.json"),
         &serde_json::to_vec_pretty(&config)?,
@@ -400,6 +444,7 @@ pub fn import(payload: &Payload, paths: &Paths, pak: Option<&Path>) -> io::Resul
         serde_json::to_vec_pretty(&serde_json::json!({
             "release": crate::update::RELEASE,
             "installed": ts,
+            "steam_launch": steam,
         }))?,
     )?;
     info!(
@@ -479,6 +524,14 @@ pub struct LaunchOptions {
 /// Puts mint in front of DRG in every Steam user's launch options, keeping a backup of each
 /// changed localconfig.vdf. Steam must not run.
 pub fn set_launch_options(paths: &Paths) -> LaunchOptions {
+    // Steam would start a missing program, and DRG wouldn't start at all
+    if cfg!(windows) && !paths.install_dir.join(LAUNCHER).is_file() {
+        warn!("{LAUNCHER} is missing, not changing Steam's launch options");
+        return LaunchOptions {
+            done: Vec::new(),
+            through_mint: false,
+        };
+    }
     let wrapper = if cfg!(windows) {
         format!("\"{}\"", paths.install_dir.join(LAUNCHER).display())
     } else {
@@ -548,14 +601,23 @@ pub fn run(payload: Payload) -> Result<()> {
         return gui::run(payload, paths);
     }
     // set up already: bring the installed mint up to date, and start it
+    if mint_running() {
+        // replacing it, or a second one, would only fight over its config
+        info!("mint is open already");
+        rfd::MessageDialog::new()
+            .set_title("mint")
+            .set_description("mint is already open.")
+            .show();
+        return Ok(());
+    }
     if let Err(e) = install_exe(&payload, &paths) {
         warn!("{e}");
     }
-    if let Err(e) = ensure_launcher(&paths.install_dir) {
+    if let Err(e) = install_support(&payload, &paths) {
         warn!("{e}");
     }
     let steam = configured_pak(&paths).is_some_and(|p| check_pak(&p).is_ok_and(|xbox| !xbox));
-    if steam && !steam_running() {
+    if steam && paths.steam_launch_wanted() && !steam_running() {
         set_launch_options(&paths);
     }
     start(&paths).with_context(|| format!("starting {}", paths.exe().display()))
@@ -642,7 +704,7 @@ mod tests {
         assert!(paths.previous_setup() && !paths.set_up_before());
 
         let pak = dir.path().join("FSD-WindowsNoEditor.pak");
-        let done = import(&p, &paths, Some(&pak)).unwrap();
+        let done = import(&p, &paths, Some(&pak), true).unwrap();
         assert_eq!(done.len(), 3, "{done:?}");
         assert!(paths.set_up_before() && !paths.previous_setup());
         let config: serde_json::Value =
@@ -674,7 +736,37 @@ mod tests {
         let paths = paths(dir.path());
         assert!(install_exe(&p, &paths).unwrap().is_some());
         assert_eq!(fs::read(paths.exe()).unwrap(), b"#!fake mint binary\n");
-        assert_eq!(fs::read(paths.install_dir.join(OODLE)).unwrap(), b"oodle");
         assert!(Payload::read(&paths.exe()).unwrap().is_none());
+        // Oodle (and on Windows the launcher) also when mint itself wasn't replaced
+        assert!(!paths.install_dir.join(OODLE).exists());
+        install_support(&p, &paths).unwrap();
+        assert_eq!(fs::read(paths.install_dir.join(OODLE)).unwrap(), b"oodle");
+    }
+
+    #[test]
+    fn skipping_steam_is_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Payload::read(&setup_binary(dir.path(), FILES))
+            .unwrap()
+            .unwrap();
+        let paths = paths(dir.path());
+        import(&p, &paths, None, false).unwrap();
+        assert!(!paths.steam_launch_wanted());
+        import(&p, &paths, None, true).unwrap();
+        assert!(paths.steam_launch_wanted());
+        // install.ps1 and install.sh leave an empty marker
+        fs::write(paths.marker(), b"").unwrap();
+        assert!(paths.steam_launch_wanted());
+    }
+
+    #[test]
+    fn a_corrupt_trailer_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bin = b"#!fake mint binary\n".to_vec();
+        bin.extend(u64::MAX.to_le_bytes());
+        bin.extend(MAGIC);
+        let path = dir.path().join("broken");
+        fs::write(&path, bin).unwrap();
+        assert!(Payload::read(&path).is_err());
     }
 }

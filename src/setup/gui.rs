@@ -45,6 +45,8 @@ struct Setup {
     xbox: bool,
     previous: bool,
     steam_running: bool,
+    /// An open mint would save its old config over the imported one when it exits.
+    mint_running: bool,
     steam_checked: Instant,
     /// Set up without touching Steam's launch options.
     skip_steam: bool,
@@ -63,6 +65,7 @@ impl Setup {
             pak,
             pak_err: None,
             steam_running: super::steam_running(),
+            mint_running: super::mint_running(),
             steam_checked: Instant::now(),
             skip_steam: false,
             stage: Stage::Ready,
@@ -99,12 +102,25 @@ impl Setup {
         let steam = self.steam_setup();
         std::thread::spawn(move || {
             let result = (|| -> std::io::Result<Done> {
+                if super::mint_running() {
+                    return Err(std::io::Error::other(
+                        "mint is open. Close it and try again.",
+                    ));
+                }
                 let mut lines = Vec::new();
                 lines.extend(super::install_exe(&payload, &paths)?);
-                lines.extend(super::import(&payload, &paths, pak.as_deref())?);
+                super::install_support(&payload, &paths)?;
+                lines.extend(super::import(&payload, &paths, pak.as_deref(), steam)?);
                 lines.extend(super::add_shortcuts(&paths));
                 let mut through_steam = false;
-                if steam {
+                if steam && super::steam_running() {
+                    // started since the window last looked; it would undo the change on exit
+                    lines.push(
+                        "Steam was started meanwhile, so it still starts DRG without mint. Close \
+                         Steam completely and run mint-setup again."
+                            .into(),
+                    );
+                } else if steam {
                     let opts = super::set_launch_options(&paths);
                     lines.extend(opts.done);
                     through_steam = opts.through_mint;
@@ -142,12 +158,20 @@ impl eframe::App for Setup {
             match rx.try_recv() {
                 Ok(Ok(done)) => self.stage = Stage::Done(done),
                 Ok(Err(e)) => self.stage = Stage::Failed(e),
-                Err(_) => ctx.request_repaint_after(Duration::from_millis(100)),
+                Err(mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(100))
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.stage = Stage::Failed(
+                        "Setup stopped unexpectedly. Details are in setup.log next to mint.".into(),
+                    )
+                }
             }
         }
         if matches!(self.stage, Stage::Ready) {
             if self.steam_checked.elapsed() > Duration::from_secs(1) {
                 self.steam_running = super::steam_running();
+                self.mint_running = super::mint_running();
                 self.steam_checked = Instant::now();
             }
             ctx.request_repaint_after(Duration::from_secs(1));
@@ -241,6 +265,12 @@ impl Setup {
                     });
                 }
 
+                if self.mint_running {
+                    row(ui, Some(false), "mint", |ui| {
+                        ui.label("is open. Close it first.");
+                    });
+                }
+
                 if self.previous {
                     row(ui, None, "Earlier mint", |ui| {
                         ui.label("found; it's kept as a backup next to the new one.");
@@ -249,7 +279,8 @@ impl Setup {
             });
 
         ui.add_space(16.0);
-        let ready = self.pak.is_some() && !(self.steam_setup() && self.steam_running);
+        let ready =
+            self.pak.is_some() && !self.mint_running && !(self.steam_setup() && self.steam_running);
         ui.horizontal(|ui| {
             let button = egui::Button::new(RichText::new("  Set up  ").size(18.0));
             if ui.add_enabled(ready && !working, button).clicked() {
@@ -259,6 +290,8 @@ impl Setup {
                 ui.spinner();
             } else if self.pak.is_none() {
                 ui.label("Choose Deep Rock Galactic first.");
+            } else if self.mint_running {
+                ui.label("Waiting for mint to close…");
             } else if !ready {
                 ui.label("Waiting for Steam to close…");
             }

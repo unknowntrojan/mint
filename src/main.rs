@@ -264,6 +264,15 @@ fn init_provider(
         .or_default();
     for p in factory.parameters {
         if !params.contains_key(p.name) {
+            // Windows release builds are GUI programs: the shell doesn't wait, and keystrokes
+            // (a mod.io token!) would be split between it and mint
+            if cfg!(all(windows, not(debug_assertions))) {
+                return Err(MintError::GenericError {
+                    source: mint_lib::error::GenericError {
+                        msg: format!("{} isn't set; set it in mint's window first", p.name),
+                    },
+                });
+            }
             // this blocks but since we're calling it on the main thread it'll be fine
             let value =
                 dialoguer::Password::with_theme(&dialoguer::theme::ColorfulTheme::default())

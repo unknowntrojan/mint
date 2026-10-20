@@ -199,7 +199,10 @@ impl Integrate {
                 Ok(()) => {
                     info!("integration complete");
                     app.last_action = Some(LastAction::success("integration complete".to_string()));
-                    app.record_install();
+                    // only if what was installed is still what's selected
+                    if app.installing.as_ref() == Some(&app.install_specs()) {
+                        app.record_install();
+                    }
                 }
                 Err(ref e)
                     if let IntegrationError::ProviderError { source } = e
@@ -216,6 +219,7 @@ impl Integrate {
                 }
             }
             app.integrate_rid = None;
+            app.installing = None;
         }
     }
 }

@@ -76,7 +76,8 @@ impl App {
         };
         match step {
             Step::Waiting => {
-                if self.self_update.is_some() || self.needs_restart {
+                // the remote presets decide what a selected remote preset installs
+                if self.self_update.is_some() || self.needs_restart || self.remote_rid.is_some() {
                     return;
                 }
                 if self.safe_mode() {
@@ -162,8 +163,14 @@ impl App {
             if let Some(c) = &mut self.chooser {
                 c.error = None;
             }
-            self.start_install(ctx);
-            self.set_step(Step::Installing);
+            if self.start_install(ctx) {
+                self.set_step(Step::Installing);
+            } else {
+                self.chooser_failed(
+                    "Deep Rock Galactic isn't set; open the mod manager and set it in the settings."
+                        .into(),
+                );
+            }
         }
     }
 
@@ -480,6 +487,16 @@ impl App {
         h.update(crate::update::describe());
         h.update(format!("|{}|{}|{modified}|", pak.display(), meta.len()));
         h.update(format!("{:?}", MetaConfig::from(self.state.config.deref())));
+        // an install from somewhere else (the command line, another mint) rewrites it
+        if let Some([mods_pak, _]) = self.installed_files()
+            && let Ok(m) = std::fs::metadata(mods_pak)
+        {
+            let modified = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok());
+            h.update(format!("{}|{modified:?}|", m.len()));
+        }
         for spec in self.install_specs() {
             let resolved = self
                 .state

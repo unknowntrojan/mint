@@ -61,6 +61,20 @@ use request_counter::{RequestCounter, RequestID};
 use self::toggle_switch::toggle_switch;
 
 pub fn gui(dirs: Dirs, args: Option<Vec<String>>) -> Result<(), MintError> {
+    if args.is_some() {
+        // started by Steam: once the game runs, a crash waits for it and exits 0, or
+        // mint-launch would offer to start a second one
+        let default = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            default(info);
+            if let Ok(mut game) = autolaunch::GAME.try_lock()
+                && let Some(game) = game.as_mut()
+            {
+                let _ = game.wait();
+                std::process::exit(0);
+            }
+        }));
+    }
     // started by Steam: the small Play chooser first
     let size = if args.is_some() {
         [580.0, 330.0]
@@ -190,6 +204,8 @@ pub struct App {
     chooser: Option<autolaunch::Chooser>,
     /// Whether the preset server answered the last time remote presets were fetched.
     server_ok: Option<bool>,
+    /// What the running install installs; recorded as installed only if it's still selected.
+    installing: Option<Vec<ModSpecification>>,
 }
 
 /// What a button in the preset bar asked for.
@@ -495,6 +511,7 @@ impl App {
             publish_rid: None,
             chooser: args.is_some().then(autolaunch::Chooser::new),
             server_ok: None,
+            installing: None,
             args,
         })
     }
@@ -544,11 +561,13 @@ impl App {
         uninstall(&pak_path, mods).map_err(|e| e.to_string())
     }
 
-    fn start_install(&mut self, ctx: &egui::Context) {
+    /// Starts installing the selected mods; false without a DRG pak.
+    fn start_install(&mut self, ctx: &egui::Context) -> bool {
         let Some(fsd_pak) = self.state.config.drg_pak_path.clone() else {
-            return;
+            return false;
         };
         let mods = self.install_specs();
+        self.installing = Some(mods.clone());
         self.last_action = None;
         self.integrate_rid = Some(message::Integrate::send(
             &mut self.request_counter,
@@ -560,6 +579,7 @@ impl App {
             ctx.clone(),
         ));
         self.problematic_mod_id = None;
+        true
     }
 
     fn ui_profile(&mut self, ui: &mut Ui, profile: &str) {
@@ -2206,8 +2226,9 @@ impl eframe::App for App {
             self.chooser = None;
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             std::thread::spawn(move || {
-                let _ = child.wait();
-                std::process::exit(0);
+                // mint-launch offers to start the game anyway if the new mint failed
+                let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(1);
+                std::process::exit(code);
             });
             return;
         }
@@ -2264,16 +2285,17 @@ impl eframe::App for App {
                                 })
                                 .clicked()
                         {
-                            let args = args.clone();
-                            std::thread::spawn(move || {
-                                let mut iter = args.iter();
-                                std::process::Command::new(iter.next().unwrap())
-                                    .args(iter)
-                                    .spawn()
-                                    .unwrap()
-                                    .wait()
-                                    .unwrap();
-                            });
+                            let (program, rest) = args.split_first().unwrap();
+                            match std::process::Command::new(program).args(rest).spawn() {
+                                // gui() waits for it once the window is closed, so Steam keeps
+                                // counting the game as running
+                                Ok(game) => *autolaunch::GAME.lock().unwrap() = Some(game),
+                                Err(e) => {
+                                    self.last_action = Some(LastAction::failure(format!(
+                                        "starting the game: {e}"
+                                    )))
+                                }
+                            }
                         }
 
                         ui.add_enabled_ui(self.state.config.drg_pak_path.is_some(), |ui| {

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
+use mint_server::mods::{ModIo, Mods};
 use mint_server::{AppState, keys, releases::Releases, router, store::Store};
 use tracing::info;
 
@@ -11,7 +12,10 @@ const USAGE: &str = "usage:
 
 environment:
   MINT_SERVER_LISTEN   address to listen on (default 0.0.0.0:8080)
-  MINT_SERVER_DATA     data directory (default /data); publish keys live in <data>/keys";
+  MINT_SERVER_DATA     data directory (default /data); publish keys live in <data>/keys
+  MINT_MODIO_TOKEN     mod.io OAuth token; lets the server download mod files of published
+                       presets from mod.io. Without it, it only serves uploaded ones.
+  MINT_MODIO_API       mod.io API (default https://api.mod.io/v1)";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -53,9 +57,23 @@ async fn serve(data: PathBuf, keys_file: PathBuf) -> Result<()> {
     }
     let releases = Releases::open(&data, remote_preset::release::PUBLIC_KEY)
         .with_context(|| format!("opening releases in {}", data.display()))?;
+    let modio = match std::env::var("MINT_MODIO_TOKEN") {
+        Ok(token) if !token.trim().is_empty() => {
+            let api =
+                std::env::var("MINT_MODIO_API").unwrap_or_else(|_| "https://api.mod.io/v1".into());
+            Some(ModIo::new(&api, token.trim()).context("setting up the mod.io client")?)
+        }
+        _ => {
+            info!("no MINT_MODIO_TOKEN, serving only uploaded mod files");
+            None
+        }
+    };
+    let mods =
+        Mods::open(&data, modio).with_context(|| format!("opening mods in {}", data.display()))?;
     let app = router(AppState {
         store: Arc::new(store),
         releases: Arc::new(releases),
+        mods: Arc::new(mods),
         keys_file,
     });
 

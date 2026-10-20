@@ -5,7 +5,8 @@
 # The NAS's docker builds the image over ssh from this checkout (native arm64, no registry) and
 # tags it mint-server:local. /data/docker/mint/ gets docker-compose.yml (the previous one is kept
 # as docker-compose.yml.bak); data/ and .env are created on the first run and never touched
-# afterwards. The tunnel only starts once TUNNEL_TOKEN is set in .env.
+# afterwards. The tunnel only starts once TUNNEL_TOKEN is set in .env; the mod mirror only
+# downloads from mod.io once MINT_MODIO_TOKEN is.
 set -euo pipefail
 
 host=${1:-root@lilnasx}
@@ -25,7 +26,7 @@ if [[ ! -d data ]]; then
 fi
 if [[ ! -e .env ]]; then
 	install -m 600 /dev/null .env
-	echo 'TUNNEL_TOKEN=' > .env
+	printf 'TUNNEL_TOKEN=\nMINT_MODIO_TOKEN=\n' > .env
 fi
 REMOTE
 
@@ -43,6 +44,9 @@ if grep -q '^TUNNEL_TOKEN=.' .env; then
 	docker compose up -d
 else
 	echo "TUNNEL_TOKEN is empty in $dir/.env; the tunnel isn't started" >&2
+fi
+if ! grep -q '^MINT_MODIO_TOKEN=.' .env; then
+	echo "MINT_MODIO_TOKEN is empty in $dir/.env; the mod mirror serves only uploaded files" >&2
 fi
 docker compose ps
 REMOTE

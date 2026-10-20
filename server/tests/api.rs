@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
+use mint_server::mods::{ModFile, ModIo, Mods};
 use mint_server::{AppState, keys, releases::Releases, router, store::Store};
 use remote_preset::release::{LINUX, Manifest, ReleaseFile, SignedManifest, WINDOWS};
 use remote_preset::{Preset, PresetMod, PresetSummary, PresetUpload};
@@ -36,10 +37,15 @@ fn release_key() -> ed25519_dalek::SigningKey {
 }
 
 fn app(data: &std::path::Path) -> Router {
+    app_with_modio(data, None)
+}
+
+fn app_with_modio(data: &std::path::Path, modio: Option<ModIo>) -> Router {
     let public = hex::encode(release_key().verifying_key().to_bytes());
     router(AppState {
         store: Arc::new(Store::open(data).unwrap()),
         releases: Arc::new(Releases::open(data, &public).unwrap()),
+        mods: Arc::new(Mods::open(data, modio).unwrap()),
         keys_file: data.join("keys"),
     })
 }
@@ -419,4 +425,217 @@ async fn releases_upload_publish_and_download() {
         serde_json::from_slice::<SignedManifest>(&body).unwrap(),
         signed
     );
+}
+
+fn put_mod(
+    key: Option<&str>,
+    mod_id: u32,
+    modfile_id: u32,
+    sha256: &str,
+    data: &[u8],
+) -> Request<Body> {
+    let mut r = Request::put(format!(
+        "/api/v1/mods/{mod_id}/files/{modfile_id}?sha256={sha256}"
+    ));
+    if let Some(k) = key {
+        r = r.header(header::AUTHORIZATION, format!("Bearer {k}"));
+    }
+    r.body(Body::from(data.to_vec())).unwrap()
+}
+
+fn sha256(data: &[u8]) -> String {
+    hex::encode(Sha256::digest(data))
+}
+
+#[tokio::test]
+async fn mod_files_can_be_uploaded_by_publishers() {
+    let s = server();
+    let data = b"cached pak".as_slice();
+    let sha = sha256(data);
+
+    assert_eq!(
+        call(&s.app, put_mod(None, 5, 500, &sha, data)).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(&s.app, put_mod(Some(&s.key), 5, 500, "xyz", data))
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(
+            &s.app,
+            put_mod(Some(&s.key), 5, 500, &sha256(b"other"), data)
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        call(&s.app, get("/api/v1/mods/5/files/500")).await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    assert_eq!(
+        call(&s.app, put_mod(Some(&s.key), 5, 500, &sha, data))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    let (st, headers, body) = call(&s.app, get("/api/v1/mods/5/files/500")).await;
+    assert_eq!((st, body.as_slice()), (StatusCode::OK, data));
+    assert_eq!(headers["x-sha256"], sha.as_str());
+    assert!(
+        headers[header::CACHE_CONTROL]
+            .to_str()
+            .unwrap()
+            .contains("immutable")
+    );
+    // a modfile never changes: uploading it again is fine and keeps what's there
+    assert_eq!(
+        call(&s.app, put_mod(Some(&s.key), 5, 500, &sha, data))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+
+    let (_, _, body) = call(&s.app, get("/api/v1/mods")).await;
+    let list: Vec<ModFile> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        list,
+        [ModFile {
+            mod_id: 5,
+            modfile_id: 500,
+            size: data.len() as u64,
+            sha256: sha,
+        }]
+    );
+
+    // without a mod.io token, missing files stay missing, even for preset mods
+    call(&s.app, put(Some(&s.key), json(&upload("Pack", &[9])))).await;
+    assert_eq!(
+        call(&s.app, get("/api/v1/mods/9/files/900")).await.0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+/// Serves `/v1/games/2475/mods/{mod}/files?id=…` and the downloads like mod.io, for token `tok`.
+async fn fake_modio(
+    files: Vec<(u32, u32, &'static [u8], String)>,
+) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    use axum::extract::{Query, State};
+    use axum::routing::get;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    type Files = Arc<Vec<(u32, u32, &'static [u8], String)>>;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let downloads = Arc::new(AtomicUsize::new(0));
+    let state = (Arc::new(files), downloads.clone(), base.clone());
+    let app = Router::new()
+        .route(
+            "/v1/games/2475/mods/{mod_id}/files",
+            get(
+                |State((files, _, base)): State<(Files, Arc<AtomicUsize>, String)>,
+                 axum::extract::Path(mod_id): axum::extract::Path<u32>,
+                 Query(q): Query<HashMap<String, u32>>,
+                 headers: axum::http::HeaderMap| async move {
+                    if headers.get(header::AUTHORIZATION).map(|v| v.as_bytes())
+                        != Some(b"Bearer tok".as_slice())
+                    {
+                        return Err(StatusCode::UNAUTHORIZED);
+                    }
+                    let data: Vec<_> = files
+                        .iter()
+                        .filter(|f| f.0 == mod_id && Some(&f.1) == q.get("id"))
+                        .map(|(m, id, bytes, md5)| {
+                            serde_json::json!({
+                                "id": id, "mod_id": m, "filesize": bytes.len(),
+                                "filehash": { "md5": md5 },
+                                "download": { "binary_url": format!("{base}/dl/{id}") },
+                            })
+                        })
+                        .collect();
+                    Ok(axum::Json(serde_json::json!({ "data": data })))
+                },
+            ),
+        )
+        .route(
+            "/dl/{id}",
+            get(
+                |State((files, downloads, _)): State<(Files, Arc<AtomicUsize>, String)>,
+                 axum::extract::Path(id): axum::extract::Path<u32>| async move {
+                    downloads.fetch_add(1, Ordering::SeqCst);
+                    files
+                        .iter()
+                        .find(|f| f.1 == id)
+                        .map(|f| f.2.to_vec())
+                        .ok_or(StatusCode::NOT_FOUND)
+                },
+            ),
+        )
+        .with_state(state);
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("{base}/v1"), downloads)
+}
+
+fn md5(data: &[u8]) -> String {
+    use md5::{Digest, Md5};
+    hex::encode(Md5::digest(data))
+}
+
+#[tokio::test]
+async fn mod_files_of_preset_mods_are_fetched_from_modio_once() {
+    use std::sync::atomic::Ordering;
+
+    let seven = b"pak seven".as_slice();
+    let (api, downloads) = fake_modio(vec![
+        (7, 700, seven, md5(seven)),
+        (8, 800, b"tampered", md5(b"original")),
+    ])
+    .await;
+    let s = server();
+    let app = app_with_modio(&s.data, Some(ModIo::new(&api, "tok").unwrap()));
+
+    // not in any preset: the server doesn't ask mod.io
+    assert_eq!(
+        call(&app, get("/api/v1/mods/7/files/700")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(downloads.load(Ordering::SeqCst), 0);
+
+    call(&app, put(Some(&s.key), json(&upload("Pack", &[7, 8])))).await;
+    for _ in 0..2 {
+        let (st, headers, body) = call(&app, get("/api/v1/mods/7/files/700")).await;
+        assert_eq!((st, body.as_slice()), (StatusCode::OK, seven));
+        assert_eq!(headers["x-sha256"], sha256(seven).as_str());
+    }
+    assert_eq!(
+        downloads.load(Ordering::SeqCst),
+        1,
+        "served from disk the second time"
+    );
+
+    // doesn't match mod.io's MD5: refused, nothing kept
+    assert_eq!(
+        call(&app, get("/api/v1/mods/8/files/800")).await.0,
+        StatusCode::BAD_GATEWAY
+    );
+    // mod.io has no such file
+    assert_eq!(
+        call(&app, get("/api/v1/mods/7/files/999")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    let (_, _, body) = call(&app, get("/api/v1/mods")).await;
+    let list: Vec<ModFile> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        list.iter()
+            .map(|f| (f.mod_id, f.modfile_id))
+            .collect::<Vec<_>>(),
+        [(7, 700)]
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(s.data.join("mods/8")).unwrap().collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
 }

@@ -31,7 +31,9 @@ services:
     expose:
       - 8080
     volumes:
-      # presets, revision history and publish keys; back this up
+      # presets, revision history, publish keys, releases and mirrored mods; back this up
       - ./data:/data
     environment:
       RUST_LOG: info
+      # .env; mod.io OAuth token for the mod mirror. Empty: only uploaded mod files are served.
+      MINT_MODIO_TOKEN: ${MINT_MODIO_TOKEN:-}

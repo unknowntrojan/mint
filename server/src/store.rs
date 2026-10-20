@@ -69,6 +69,15 @@ impl Store {
         self.latest.read().unwrap().get(slug).cloned()
     }
 
+    /// Whether the latest revision of any preset lists the mod.
+    pub fn has_mod(&self, mod_id: u32) -> bool {
+        self.latest
+            .read()
+            .unwrap()
+            .values()
+            .any(|p| p.mods.iter().any(|m| m.mod_id == mod_id))
+    }
+
     pub fn revision(&self, slug: &str, revision: u32) -> io::Result<Option<Preset>> {
         if !valid_slug(slug) {
             return Ok(None);

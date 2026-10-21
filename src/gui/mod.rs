@@ -1495,6 +1495,21 @@ impl App {
                         });
                         ui.end_row();
 
+                        if let Some(installed) = window.mint_launcher {
+                            ui.label("mint launcher:")
+                                .on_hover_cursor(egui::CursorIcon::Help)
+                                .on_hover_text("When you play DRG, Steam starts mint first. mint updates and installs your mods, then starts the game.");
+                            let (label, change) = if installed {
+                                ("Uninstall mint launcher", steam_prompt::Change::Uninstall)
+                            } else {
+                                ("Install mint launcher", steam_prompt::Change::Install)
+                            };
+                            if ui.add_enabled(self.steam_prompt.is_none(), egui::Button::new(label)).clicked() {
+                                self.steam_prompt = steam_prompt::SteamPrompt::change(change);
+                            }
+                            ui.end_row();
+                        }
+
                         ui.label("Version:");
                         ui.label(crate::update::describe());
                         ui.end_row();
@@ -2153,6 +2168,8 @@ struct WindowSettings {
     preset_server_err: Option<String>,
     publish_key: String,
     show_publish_key: bool,
+    /// Whether Steam starts DRG through mint, if that's up to this mint.
+    mint_launcher: Option<bool>,
 }
 
 impl WindowSettings {
@@ -2170,6 +2187,7 @@ impl WindowSettings {
             preset_server_err: None,
             publish_key: state.config.publish_key.clone().unwrap_or_default(),
             show_publish_key: false,
+            mint_launcher: steam_prompt::SteamPrompt::launcher_installed(),
         }
     }
 

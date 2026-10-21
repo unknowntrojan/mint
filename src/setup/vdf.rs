@@ -148,13 +148,7 @@ pub fn set_launch_options(
 /// is replaced. [`FLAGS`] aren't added (mint passes them to the game itself); ones already there
 /// stay, like any other option.
 pub fn with_wrapper(current: &str, wrapper: &str) -> String {
-    static EARLIER: OnceLock<regex::Regex> = OnceLock::new();
-    let earlier = EARLIER.get_or_init(|| {
-        // Windows paths aren't case-sensitive
-        regex::Regex::new(r#"(?i)"[^"]*mint(?:-launch)?(?:\.exe)?"(?:\s+launch)?\s+%command%"#)
-            .unwrap()
-    });
-    let current = earlier.replace(current.trim(), "%command%");
+    let current = without_mint(current);
     // without %command%, Steam passes the options to the game
     let (before, after) = match current.find("%command%") {
         Some(i) => (&current[..i], &current[i + "%command%".len()..]),
@@ -167,6 +161,29 @@ pub fn with_wrapper(current: &str, wrapper: &str) -> String {
         out.push_str(after);
     }
     out
+}
+
+/// `current` without mint in front of `%command%`, wherever it was and however it was started.
+fn without_mint(current: &str) -> std::borrow::Cow<'_, str> {
+    static MINT: OnceLock<regex::Regex> = OnceLock::new();
+    let mint = MINT.get_or_init(|| {
+        // Windows paths aren't case-sensitive
+        regex::Regex::new(r#"(?i)"[^"]*mint(?:-launch)?(?:\.exe)?"(?:\s+launch)?\s+%command%"#)
+            .unwrap()
+    });
+    mint.replace(current.trim(), "%command%")
+}
+
+/// `current` without mint (see [`with_wrapper`]) and with [`FLAGS`], which the game still needs
+/// when mint is started by hand. A bare `%command%` in front goes too: Steam passes options
+/// without it to the game all the same.
+pub fn without_wrapper(current: &str) -> String {
+    let current = without_mint(current);
+    let current = match current.strip_prefix("%command%") {
+        Some(rest) if rest.is_empty() || rest.starts_with(char::is_whitespace) => rest,
+        _ => &current,
+    };
+    with_flags(current)
 }
 
 /// `current` with [`FLAGS`] added, for when mint isn't started through Steam.
@@ -283,6 +300,35 @@ mod tests {
         // idempotent
         let once = m("gamemoderun %command% -dx11");
         assert_eq!(m(&once), once);
+    }
+
+    #[test]
+    fn launch_options_without_mint() {
+        let w = format!("{LAUNCHER} %command%");
+        assert_eq!(without_wrapper(&w), "-disablemodding -nosplash");
+        assert_eq!(
+            without_wrapper(&format!("{w} -dx11 -nosplash")),
+            "-dx11 -nosplash -disablemodding"
+        );
+        assert_eq!(
+            without_wrapper(
+                r#"gamemoderun "/home/jo/.local/share/mint/mint" launch %command% -dx11"#
+            ),
+            "gamemoderun %command% -dx11 -disablemodding -nosplash"
+        );
+        // back to how it was before mint, plus the game options
+        let m = |c| with_wrapper(c, LAUNCHER);
+        assert_eq!(
+            without_wrapper(&m("-dx11")),
+            "-dx11 -disablemodding -nosplash"
+        );
+        assert_eq!(without_wrapper(&m("")), "-disablemodding -nosplash");
+        // no mint in there
+        assert_eq!(without_wrapper("-dx11"), "-dx11 -disablemodding -nosplash");
+        assert_eq!(
+            without_wrapper("%command%-foo"),
+            "%command%-foo -disablemodding -nosplash"
+        );
     }
 
     #[test]

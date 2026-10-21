@@ -234,8 +234,9 @@ impl Paths {
             .unwrap_or(true)
     }
 
-    /// Remembers whether DRG should start through mint. Skip in setup and "No, and stop asking"
-    /// say no; setup then leaves Steam alone, and mint stops offering to put itself back.
+    /// Remembers whether DRG should start through mint. Skip in setup, "No, and stop asking" and
+    /// uninstalling the mint launcher in mint's settings say no; setup then leaves Steam alone, and
+    /// mint stops offering to put itself back.
     pub fn set_steam_launch_wanted(&self, wanted: bool) -> io::Result<()> {
         let mut settings = self.marker_settings();
         settings["steam_launch"] = wanted.into();
@@ -272,6 +273,12 @@ impl Paths {
                 }
             })
             .collect()
+    }
+
+    /// Whether Steam starts DRG through mint (the mint launcher) for every Steam user who played it.
+    pub fn launcher_installed(&self) -> bool {
+        let through_mint = self.through_mint();
+        !through_mint.is_empty() && through_mint.iter().all(|&t| t)
     }
 
     /// Whether mint should offer to put itself back into DRG's launch options: setup put it there
@@ -645,6 +652,21 @@ pub fn set_launch_options(paths: &Paths) -> LaunchOptions {
     }
 }
 
+/// Takes mint out of every Steam user's DRG launch options, leaving [`vdf::FLAGS`] for when mint is
+/// started by hand. Keeps a backup of each changed localconfig.vdf. Steam must not run. Whether
+/// every one could be changed.
+pub fn remove_launch_options(paths: &Paths) -> bool {
+    let ts = now();
+    let mut ok = true;
+    for config in &paths.steam_configs {
+        if let Err(e) = rewrite_launch_options(config, ts, vdf::without_wrapper) {
+            warn!("{}: {e:#}", config.display());
+            ok = false;
+        }
+    }
+    ok
+}
+
 /// Changes DRG's launch options in one localconfig.vdf to what `f` makes of them, keeping a
 /// backup. Whether they changed.
 fn rewrite_launch_options(config: &Path, ts: u64, f: impl FnOnce(&str) -> String) -> Result<bool> {
@@ -893,9 +915,11 @@ mod tests {
         let paths = set_up(dir.path(), true);
         let (config, exe) = (paths.steam_configs[0].clone(), paths.exe());
         localconfig(&config, &format!("{} %command% -dx11", paths.wrapper()));
+        assert!(paths.launcher_installed());
         assert!(!paths.launch_options_missing(&exe));
 
         localconfig(&config, "-dx11");
+        assert!(!paths.launcher_installed());
         assert!(paths.launch_options_missing(&exe));
         // only the mint setup installed puts itself back
         let other = dir.path().join("elsewhere/mint");
@@ -929,6 +953,34 @@ mod tests {
         assert!(paths.launch_options_missing(&paths.exe()));
         paths.set_steam_launch_wanted(false).unwrap();
         assert!(!paths.launch_options_missing(&paths.exe()));
+    }
+
+    #[test]
+    fn the_mint_launcher_comes_out_and_back_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = set_up(dir.path(), true);
+        let config = &paths.steam_configs[0];
+        let read = || vdf::launch_options(&fs::read_to_string(config).unwrap()).unwrap();
+        localconfig(config, "gamemoderun %command% -dx11");
+        assert!(set_launch_options(&paths).through_mint);
+        assert!(paths.launcher_installed());
+
+        assert!(remove_launch_options(&paths));
+        assert_eq!(
+            read(),
+            "gamemoderun %command% -dx11 -disablemodding -nosplash"
+        );
+        assert!(!paths.launcher_installed());
+
+        assert!(set_launch_options(&paths).through_mint);
+        assert_eq!(
+            read(),
+            format!(
+                "gamemoderun {} %command% -dx11 -disablemodding -nosplash",
+                paths.wrapper()
+            )
+        );
+        assert!(paths.launcher_installed());
     }
 
     #[test]

@@ -153,6 +153,9 @@ pub struct Paths {
     pub shortcut_dirs: Vec<PathBuf>,
     /// Every Steam user's localconfig.vdf.
     pub steam_configs: Vec<PathBuf>,
+    /// The same for a Flatpak or Snap Steam. Its sandbox can't see mint's files, so it can't start
+    /// mint, and its launch options only get the game options.
+    pub sandboxed_steam_configs: Vec<PathBuf>,
 }
 
 impl Paths {
@@ -171,6 +174,7 @@ impl Paths {
         } else {
             vec![base.data_dir().join("applications")]
         };
+        let (steam_configs, sandboxed_steam_configs) = steam_configs();
         Some(Self {
             install_dir: if cfg!(windows) {
                 base.data_local_dir()
@@ -186,12 +190,22 @@ impl Paths {
                 legacy.data_dir().to_path_buf(),
             ],
             shortcut_dirs,
-            steam_configs: steam_configs(),
+            steam_configs,
+            sandboxed_steam_configs,
         })
     }
 
     pub fn exe(&self) -> PathBuf {
         self.install_dir.join(EXE)
+    }
+
+    /// What starts mint from DRG's launch options, in front of `%command%`.
+    fn wrapper(&self) -> String {
+        if cfg!(windows) {
+            format!("\"{}\"", self.install_dir.join(LAUNCHER).display())
+        } else {
+            format!("\"{}\" launch", self.exe().display())
+        }
     }
 
     fn marker(&self) -> PathBuf {
@@ -221,25 +235,38 @@ impl Paths {
     }
 }
 
-fn steam_configs() -> Vec<PathBuf> {
-    let Ok(steam) = steamlocate::SteamDir::locate() else {
-        return Vec::new();
-    };
-    let Ok(users) = fs::read_dir(steam.path().join("userdata")) else {
-        return Vec::new();
-    };
-    let mut configs: Vec<PathBuf> = users
-        .flatten()
-        .filter(|u| {
-            u.file_name()
-                .to_str()
-                .is_some_and(|n| n.parse::<u64>().is_ok_and(|id| id > 0))
-        })
-        .map(|u| u.path().join("config").join("localconfig.vdf"))
-        .filter(|p| p.is_file())
-        .collect();
-    configs.sort();
-    configs
+/// Every Steam user's localconfig.vdf, of every Steam here: the ones that can start mint, and the
+/// Flatpak and Snap ones, which can't.
+fn steam_configs() -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let (mut open, mut sandboxed) = (Vec::new(), Vec::new());
+    // the same Steam can be found under several names (~/.steam/steam is a link)
+    let mut seen = std::collections::HashSet::new();
+    for steam in steamlocate::locate_all().unwrap_or_default() {
+        let Ok(users) = fs::read_dir(steam.path().join("userdata")) else {
+            continue;
+        };
+        let dir = steam.path().to_string_lossy();
+        let into =
+            if dir.contains("/.var/app/com.valvesoftware.Steam/") || dir.contains("/snap/steam/") {
+                &mut sandboxed
+            } else {
+                &mut open
+            };
+        into.extend(
+            users
+                .flatten()
+                .filter(|u| {
+                    u.file_name()
+                        .to_str()
+                        .is_some_and(|n| n.parse::<u64>().is_ok_and(|id| id > 0))
+                })
+                .map(|u| u.path().join("config").join("localconfig.vdf"))
+                .filter(|p| p.is_file() && seen.insert(fs::canonicalize(p).unwrap_or(p.clone()))),
+        );
+    }
+    open.sort();
+    sandboxed.sort();
+    (open, sandboxed)
 }
 
 /// The Steam DRG installation, if there is one.
@@ -521,51 +548,37 @@ pub struct LaunchOptions {
     pub through_mint: bool,
 }
 
-/// Puts mint in front of DRG in every Steam user's launch options, keeping a backup of each
-/// changed localconfig.vdf. Steam must not run.
+/// Puts mint in front of DRG in every Steam user's launch options; a Flatpak or Snap Steam gets
+/// [`vdf::FLAGS`] instead. Keeps a backup of each changed localconfig.vdf. Steam must not run.
 pub fn set_launch_options(paths: &Paths) -> LaunchOptions {
-    // Steam would start a missing program, and DRG wouldn't start at all
-    if cfg!(windows) && !paths.install_dir.join(LAUNCHER).is_file() {
-        warn!("{LAUNCHER} is missing, not changing Steam's launch options");
-        return LaunchOptions {
-            done: Vec::new(),
-            through_mint: false,
-        };
-    }
-    let wrapper = if cfg!(windows) {
-        format!("\"{}\"", paths.install_dir.join(LAUNCHER).display())
-    } else {
-        format!("\"{}\" launch", paths.exe().display())
-    };
     let ts = now();
     let mut done = Vec::new();
     let mut ok = !paths.steam_configs.is_empty();
-    for config in &paths.steam_configs {
-        let result = (|| -> Result<Option<String>> {
-            let text = fs::read_to_string(config)?;
-            let Some(new) = vdf::set_launch_options(&text, |c| vdf::with_wrapper(c, &wrapper))
-                .map_err(anyhow::Error::msg)?
-            else {
-                return Ok(None);
-            };
-            let mut backup = config.as_os_str().to_os_string();
-            backup.push(format!(".bak-{ts}"));
-            fs::copy(config, &backup)?;
-            let tmp = config.with_extension("vdf.tmp-mint");
-            fs::write(&tmp, new.as_bytes())?;
-            fs::rename(&tmp, config)?;
-            Ok(Some(vdf::launch_options(&new).map_err(anyhow::Error::msg)?))
-        })();
-        match result {
-            Ok(Some(options)) => {
-                info!("{}: launch options now {options:?}", config.display());
-                done.push("Deep Rock Galactic starts through mint now".into());
+    if cfg!(windows) && !paths.install_dir.join(LAUNCHER).is_file() {
+        // Steam would start a missing program, and DRG wouldn't start at all
+        warn!("{LAUNCHER} is missing, not changing Steam's launch options");
+        ok = false;
+    } else {
+        let wrapper = paths.wrapper();
+        for config in &paths.steam_configs {
+            match rewrite_launch_options(config, ts, |c| vdf::with_wrapper(c, &wrapper)) {
+                Ok(true) => done.push("Deep Rock Galactic starts through mint now".into()),
+                Ok(false) => {}
+                Err(e) => {
+                    warn!("{}: {e:#}", config.display());
+                    ok = false;
+                }
             }
-            Ok(None) => {}
-            Err(e) => {
-                warn!("{}: {e:#}", config.display());
-                ok = false;
-            }
+        }
+    }
+    for config in &paths.sandboxed_steam_configs {
+        match rewrite_launch_options(config, ts, vdf::with_flags) {
+            Ok(true) => done.push(format!(
+                "Added {} to DRG's launch options",
+                vdf::FLAGS.join(" ")
+            )),
+            Ok(false) => {}
+            Err(e) => warn!("{}: {e:#}", config.display()),
         }
     }
     done.dedup();
@@ -573,6 +586,24 @@ pub fn set_launch_options(paths: &Paths) -> LaunchOptions {
         done,
         through_mint: ok,
     }
+}
+
+/// Changes DRG's launch options in one localconfig.vdf to what `f` makes of them, keeping a
+/// backup. Whether they changed.
+fn rewrite_launch_options(config: &Path, ts: u64, f: impl FnOnce(&str) -> String) -> Result<bool> {
+    let text = fs::read_to_string(config)?;
+    let Some(new) = vdf::set_launch_options(&text, f).map_err(anyhow::Error::msg)? else {
+        return Ok(false);
+    };
+    let mut backup = config.as_os_str().to_os_string();
+    backup.push(format!(".bak-{ts}"));
+    fs::copy(config, &backup)?;
+    let tmp = config.with_extension("vdf.tmp-mint");
+    fs::write(&tmp, new.as_bytes())?;
+    fs::rename(&tmp, config)?;
+    let options = vdf::launch_options(&new).map_err(anyhow::Error::msg)?;
+    info!("{}: launch options now {options:?}", config.display());
+    Ok(true)
 }
 
 /// Starts the installed mint.
@@ -666,7 +697,21 @@ mod tests {
             legacy_dirs: vec![root.join("roaming/drg-mod-integration/config")],
             shortcut_dirs: vec![],
             steam_configs: vec![],
+            sandboxed_steam_configs: vec![],
         }
+    }
+
+    /// A localconfig.vdf whose user has DRG settings with these launch options.
+    fn localconfig(path: &Path, options: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let options = options.replace('\\', "\\\\").replace('"', "\\\"");
+        fs::write(
+            path,
+            format!(
+                "\"UserLocalConfigStore\"\n{{\n\t\"Software\"\n\t{{\n\t\t\"Valve\"\n\t\t{{\n\t\t\t\"Steam\"\n\t\t\t{{\n\t\t\t\t\"apps\"\n\t\t\t\t{{\n\t\t\t\t\t\"548430\"\n\t\t\t\t\t{{\n\t\t\t\t\t\t\"LaunchOptions\"\t\t\"{options}\"\n\t\t\t\t\t}}\n\t\t\t\t}}\n\t\t\t}}\n\t\t}}\n\t}}\n}}\n"
+            ),
+        )
+        .unwrap();
     }
 
     const FILES: &[(&str, &[u8])] = &[
@@ -768,5 +813,42 @@ mod tests {
         let path = dir.path().join("broken");
         fs::write(&path, bin).unwrap();
         assert!(Payload::read(&path).is_err());
+    }
+
+    /// Set up with Steam, mint installed and DRG at a pak, the way setup leaves it.
+    fn set_up(root: &Path, steam: bool) -> Paths {
+        let p = Payload::read(&setup_binary(root, FILES)).unwrap().unwrap();
+        let mut paths = paths(root);
+        paths.steam_configs = vec![root.join("steam/userdata/1/config/localconfig.vdf")];
+        let pak = root.join("DRG/FSD/Content/Paks/FSD-WindowsNoEditor.pak");
+        fs::create_dir_all(pak.parent().unwrap()).unwrap();
+        fs::write(&pak, b"pak").unwrap();
+        fs::create_dir_all(&paths.install_dir).unwrap();
+        fs::write(paths.exe(), b"mint").unwrap();
+        fs::write(paths.install_dir.join(LAUNCHER), b"mint-launch").unwrap();
+        import(&p, &paths, Some(&pak), steam).unwrap();
+        paths
+    }
+
+    #[test]
+    fn sandboxed_steam_only_gets_the_game_options() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = set_up(dir.path(), true);
+        let flatpak = dir.path().join("flatpak/userdata/2/config/localconfig.vdf");
+        paths.sandboxed_steam_configs = vec![flatpak.clone()];
+        localconfig(&paths.steam_configs[0], "-dx11");
+        localconfig(&flatpak, "-dx11");
+        let opts = set_launch_options(&paths);
+        assert!(opts.through_mint);
+        let read = |p: &Path| vdf::launch_options(&fs::read_to_string(p).unwrap()).unwrap();
+        assert_eq!(
+            read(&paths.steam_configs[0]),
+            format!("{} %command% -dx11", paths.wrapper())
+        );
+        assert_eq!(read(&flatpak), "-dx11 -disablemodding -nosplash");
+
+        // only a Flatpak Steam: DRG doesn't start through mint
+        paths.steam_configs.clear();
+        assert!(!set_launch_options(&paths).through_mint);
     }
 }

@@ -56,7 +56,10 @@ struct Setup {
 impl Setup {
     fn new(payload: Payload, paths: Paths) -> Self {
         let pak = super::find_drg();
-        info!("DRG: {pak:?}, Steam configs: {:?}", paths.steam_configs);
+        info!(
+            "DRG: {pak:?}, Steam configs: {:?}, Flatpak/Snap: {:?}",
+            paths.steam_configs, paths.sandboxed_steam_configs
+        );
         Self {
             payload: Arc::new(payload),
             previous: paths.previous_setup(),
@@ -72,8 +75,12 @@ impl Setup {
         }
     }
 
+    fn steam_found(&self) -> bool {
+        !self.paths.steam_configs.is_empty() || !self.paths.sandboxed_steam_configs.is_empty()
+    }
+
     fn steam_setup(&self) -> bool {
-        !self.xbox && !self.skip_steam && !self.paths.steam_configs.is_empty()
+        !self.xbox && !self.skip_steam && self.steam_found()
     }
 
     fn choose_pak(&mut self) {
@@ -234,7 +241,7 @@ impl Setup {
                     row(ui, None, "Steam", |ui| {
                         ui.label("Xbox / Game Pass version: start mint before the game and click Install mods.");
                     });
-                } else if self.paths.steam_configs.is_empty() {
+                } else if !self.steam_found() {
                     row(ui, None, "Steam", |ui| {
                         ui.label("not found, so you'll start mint yourself before playing.");
                     });
@@ -258,6 +265,13 @@ impl Setup {
                         {
                             self.skip_steam = true;
                         }
+                    });
+                } else if self.paths.steam_configs.is_empty() {
+                    row(ui, None, "Steam", |ui| {
+                        ui.label(
+                            "is the Flatpak or Snap version, which can't start mint, so you'll \
+                             start mint yourself before playing.",
+                        );
                     });
                 } else {
                     row(ui, Some(true), "Steam", |ui| {
@@ -313,8 +327,10 @@ impl Setup {
             RichText::new(if through_steam {
                 "From now on just start Deep Rock Galactic in Steam. mint gets your mods ready \
              first and then starts the game."
-            } else {
+            } else if cfg!(windows) {
                 "Before playing, open mint (Start Menu or Desktop) and click Install mods."
+            } else {
+                "Before playing, open mint from your app menu and click Install mods."
             })
             .strong(),
         );

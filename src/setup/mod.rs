@@ -212,19 +212,67 @@ impl Paths {
         self.config_dir.join(MARKER)
     }
 
+    /// The marker's settings. Markers from install.ps1/install.sh are empty files.
+    fn marker_settings(&self) -> serde_json::Value {
+        fs::read(self.marker())
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .filter(serde_json::Value::is_object)
+            .unwrap_or_else(|| serde_json::json!({}))
+    }
+
     /// Whether a friendpack was imported here before.
     pub fn set_up_before(&self) -> bool {
         self.marker().exists()
     }
 
     /// Whether DRG's launch options should go through mint: not if Steam was skipped during
-    /// setup. Markers from install.ps1/install.sh (empty files) predate the choice.
+    /// setup. Markers from install.ps1/install.sh predate the choice.
     pub fn steam_launch_wanted(&self) -> bool {
-        fs::read(self.marker())
-            .ok()
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-            .and_then(|m| m["steam_launch"].as_bool())
+        self.marker_settings()["steam_launch"]
+            .as_bool()
             .unwrap_or(true)
+    }
+
+    /// "No, and stop asking" when mint offered to put itself back into the launch options.
+    /// Running setup again still puts it back.
+    pub fn stop_steam_prompt(&self) -> io::Result<()> {
+        let mut settings = self.marker_settings();
+        settings["steam_prompt"] = false.into();
+        fs::write(self.marker(), serde_json::to_vec_pretty(&settings)?)
+    }
+
+    /// Whether mint should offer to put itself back into DRG's launch options: setup put it there
+    /// for `exe` (the running mint), DRG is the Steam version, and a Steam user's options don't
+    /// start mint (anymore). Not after Skip in setup, or "No, and stop asking".
+    pub fn launch_options_missing(&self, exe: &Path) -> bool {
+        if !self.set_up_before()
+            || !self.steam_launch_wanted()
+            || self.marker_settings()["steam_prompt"].as_bool() == Some(false)
+        {
+            return false;
+        }
+        let same = matches!(
+            (fs::canonicalize(exe), fs::canonicalize(self.exe())),
+            (Ok(a), Ok(b)) if a == b
+        );
+        if !same || !configured_pak(self).is_some_and(|p| check_pak(&p).is_ok_and(|xbox| !xbox)) {
+            return false;
+        }
+        let wanted = format!("{} %command%", self.wrapper());
+        self.steam_configs.iter().any(|config| {
+            match fs::read_to_string(config)
+                .map_err(|e| e.to_string())
+                .and_then(|text| vdf::drg_launch_options(&text))
+            {
+                // a Steam user without DRG settings never played it here
+                Ok(options) => options.is_some_and(|o| !o.contains(&wanted)),
+                Err(e) => {
+                    warn!("{}: {e}", config.display());
+                    false
+                }
+            }
+        })
     }
 
     /// Whether there's a mint setup that importing would move aside.
@@ -831,6 +879,48 @@ mod tests {
     }
 
     #[test]
+    fn mint_missing_from_the_launch_options_is_noticed() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = set_up(dir.path(), true);
+        let (config, exe) = (paths.steam_configs[0].clone(), paths.exe());
+        localconfig(&config, &format!("{} %command% -dx11", paths.wrapper()));
+        assert!(!paths.launch_options_missing(&exe));
+
+        localconfig(&config, "-dx11");
+        assert!(paths.launch_options_missing(&exe));
+        // only the mint setup installed puts itself back
+        let other = dir.path().join("elsewhere/mint");
+        fs::create_dir_all(other.parent().unwrap()).unwrap();
+        fs::write(&other, b"mint").unwrap();
+        assert!(!paths.launch_options_missing(&other));
+        // a Steam user who never played DRG here
+        fs::write(&config, "\"UserLocalConfigStore\" { \"Software\" { } }").unwrap();
+        assert!(!paths.launch_options_missing(&exe));
+
+        localconfig(&config, "-dx11");
+        paths.stop_steam_prompt().unwrap();
+        assert!(!paths.launch_options_missing(&exe));
+        // the rest of the marker stays
+        assert!(paths.steam_launch_wanted());
+        assert!(paths.marker_settings()["installed"].is_u64());
+
+        // Skip in setup
+        let dir = tempfile::tempdir().unwrap();
+        let paths = set_up(dir.path(), false);
+        localconfig(&paths.steam_configs[0], "-dx11");
+        assert!(!paths.launch_options_missing(&paths.exe()));
+
+        // install.ps1 and install.sh: an empty marker, launch options with the flags only
+        let dir = tempfile::tempdir().unwrap();
+        let paths = set_up(dir.path(), true);
+        fs::write(paths.marker(), b"").unwrap();
+        localconfig(&paths.steam_configs[0], "-disablemodding -nosplash");
+        assert!(paths.launch_options_missing(&paths.exe()));
+        paths.stop_steam_prompt().unwrap();
+        assert!(!paths.launch_options_missing(&paths.exe()));
+    }
+
+    #[test]
     fn sandboxed_steam_only_gets_the_game_options() {
         let dir = tempfile::tempdir().unwrap();
         let mut paths = set_up(dir.path(), true);
@@ -846,6 +936,7 @@ mod tests {
             format!("{} %command% -dx11", paths.wrapper())
         );
         assert_eq!(read(&flatpak), "-dx11 -disablemodding -nosplash");
+        assert!(!paths.launch_options_missing(&paths.exe()));
 
         // only a Flatpak Steam: DRG doesn't start through mint
         paths.steam_configs.clear();

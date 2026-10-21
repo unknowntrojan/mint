@@ -3,6 +3,7 @@ mod find_string;
 mod message;
 mod named_combobox;
 mod request_counter;
+mod steam_prompt;
 mod toggle_switch;
 
 //#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
@@ -207,6 +208,8 @@ pub struct App {
     server_ok: Option<bool>,
     /// What the running install installs; recorded as installed only if it's still selected.
     installing: Option<Vec<ModSpecification>>,
+    /// Started on its own while Steam doesn't start DRG through mint: the offer to fix that.
+    steam_prompt: Option<steam_prompt::SteamPrompt>,
 }
 
 /// What a button in the preset bar asked for.
@@ -513,6 +516,10 @@ impl App {
             chooser: args.is_some().then(autolaunch::Chooser::new),
             server_ok: None,
             installing: None,
+            steam_prompt: args
+                .is_none()
+                .then(steam_prompt::SteamPrompt::check)
+                .flatten(),
             args,
         })
     }
@@ -2262,6 +2269,7 @@ impl eframe::App for App {
             self.ui_chooser(ui);
             return;
         }
+        self.show_steam_prompt(ctx);
         self.show_profile_windows(ctx);
         self.show_settings(ctx);
         self.show_lints_toggle(ctx);

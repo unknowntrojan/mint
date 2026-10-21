@@ -102,6 +102,15 @@ pub fn launch_options(text: &str) -> Result<String, String> {
     Ok(locate(text)?.value.map(|v| v.2).unwrap_or_default())
 }
 
+/// DRG's launch options, or `None` if this Steam user has no DRG settings at all (never played
+/// it, or doesn't own it).
+pub fn drg_launch_options(text: &str) -> Result<Option<String>, String> {
+    let loc = locate(text)?;
+    Ok(loc
+        .block_open
+        .map(|_| loc.value.map(|v| v.2).unwrap_or_default()))
+}
+
 /// Replaces DRG's launch options with what `f` makes of the current ones. Returns the new file,
 /// or `None` if nothing changes.
 pub fn set_launch_options(
@@ -212,12 +221,19 @@ mod tests {
         let text = vdf(
             "\n\t\t\t\t\t\"548430\"\n\t\t\t\t\t{\n\t\t\t\t\t\t\"Playtime\"\t\t\"12\"\n\t\t\t\t\t}",
         );
+        // DRG's settings, without launch options
+        assert_eq!(drg_launch_options(&text).unwrap().as_deref(), Some(""));
         let out = set_launch_options(&text, with_flags).unwrap().unwrap();
         assert_eq!(launch_options(&out).unwrap(), "-disablemodding -nosplash");
 
         let text = vdf("\n\t\t\t\t\t\"1234\"\n\t\t\t\t\t{\n\t\t\t\t\t}");
+        assert_eq!(drg_launch_options(&text).unwrap(), None);
         let out = set_launch_options(&text, with_flags).unwrap().unwrap();
         assert_eq!(launch_options(&out).unwrap(), "-disablemodding -nosplash");
+        assert_eq!(
+            drg_launch_options(&out).unwrap().as_deref(),
+            Some("-disablemodding -nosplash")
+        );
         assert!(out.contains("\"1234\""));
     }
 

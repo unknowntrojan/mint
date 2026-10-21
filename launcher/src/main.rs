@@ -14,6 +14,9 @@ use std::process::{Command, ExitCode};
 
 const MINT: &str = if cfg!(windows) { "mint.exe" } else { "mint" };
 
+/// What mint adds to the game's options (mint's `setup::vdf::FLAGS`); without mint, this does.
+const FLAGS: [&str; 2] = ["-disablemodding", "-nosplash"];
+
 fn main() -> ExitCode {
     let game: Vec<OsString> = std::env::args_os().skip(1).collect();
     let Some((program, args)) = game.split_first() else {
@@ -38,6 +41,12 @@ fn main() -> ExitCode {
         "{problem}\n\nStart Deep Rock Galactic anyway? Mods that were installed before stay as they are."
     )) {
         return ExitCode::FAILURE;
+    }
+    let mut args = args.to_vec();
+    for flag in FLAGS {
+        if !args.iter().any(|a| a.eq_ignore_ascii_case(flag)) {
+            args.push(flag.into());
+        }
     }
     match Command::new(program).args(args).status() {
         Ok(status) if status.success() => ExitCode::SUCCESS,

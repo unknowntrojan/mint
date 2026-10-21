@@ -61,6 +61,7 @@ use request_counter::{RequestCounter, RequestID};
 use self::toggle_switch::toggle_switch;
 
 pub fn gui(dirs: Dirs, args: Option<Vec<String>>) -> Result<(), MintError> {
+    let args = args.map(autolaunch::with_game_flags);
     if args.is_some() {
         // started by Steam: once the game runs, a crash waits for it and exits 0, or
         // mint-launch would offer to start a second one

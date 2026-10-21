@@ -14,7 +14,8 @@ const TARGET: [&str; 6] = [
     "548430",
 ];
 
-/// Game options mint needs: DRG's own mod.io integration off, no splash screen.
+/// Game options mint needs: DRG's own mod.io integration off, no splash screen. Started through
+/// Steam, mint adds them to the game's command line itself.
 pub const FLAGS: [&str; 2] = ["-disablemodding", "-nosplash"];
 
 #[derive(Debug, Default)]
@@ -133,9 +134,10 @@ pub fn set_launch_options(
 }
 
 /// `current` with `wrapper` (what starts mint: `"C:\…\mint-launch.exe"`, or `"/…/mint" launch`
-/// on Linux) in front of `%command%`, then the game's options with [`FLAGS`] added. Other options
-/// stay: game options, and wrappers or variables before `%command%`. mint from an earlier
-/// install, wherever it was and however it was started, is replaced.
+/// on Linux) in front of `%command%`. Other options stay: game options, and wrappers or variables
+/// before `%command%`. mint from an earlier install, wherever it was and however it was started,
+/// is replaced. [`FLAGS`] aren't added (mint passes them to the game itself); ones already there
+/// stay, like any other option.
 pub fn with_wrapper(current: &str, wrapper: &str) -> String {
     static EARLIER: OnceLock<regex::Regex> = OnceLock::new();
     let earlier = EARLIER.get_or_init(|| {
@@ -154,15 +156,6 @@ pub fn with_wrapper(current: &str, wrapper: &str) -> String {
     if !after.is_empty() {
         out.push(' ');
         out.push_str(after);
-    }
-    for flag in FLAGS {
-        if !after
-            .split_whitespace()
-            .any(|a| a.eq_ignore_ascii_case(flag))
-        {
-            out.push(' ');
-            out.push_str(flag);
-        }
     }
     out
 }
@@ -201,7 +194,7 @@ mod tests {
         let out = set_launch_options(&text, |c| with_wrapper(c, LAUNCHER))
             .unwrap()
             .unwrap();
-        let want = format!("{LAUNCHER} %command% -nosplash -disablemodding");
+        let want = format!("{LAUNCHER} %command% -nosplash");
         assert_eq!(launch_options(&out).unwrap(), want);
         assert_eq!(
             out,
@@ -246,19 +239,13 @@ mod tests {
     fn launch_options_with_mint() {
         let m = |c| with_wrapper(c, LAUNCHER);
         let w = format!("{LAUNCHER} %command%");
-        assert_eq!(m(""), format!("{w} -disablemodding -nosplash"));
-        assert_eq!(
-            m("-nosplash -dx11"),
-            format!("{w} -nosplash -dx11 -disablemodding")
-        );
+        assert_eq!(m(""), w);
+        assert_eq!(m("-nosplash -dx11"), format!("{w} -nosplash -dx11"));
         assert_eq!(
             m("gamemoderun %command% -dx11"),
-            format!("gamemoderun {w} -dx11 -disablemodding -nosplash")
+            format!("gamemoderun {w} -dx11")
         );
-        assert_eq!(
-            m("PROTON_LOG=1 %command%"),
-            format!("PROTON_LOG=1 {w} -disablemodding -nosplash")
-        );
+        assert_eq!(m("PROTON_LOG=1 %command%"), format!("PROTON_LOG=1 {w}"));
         // mint from before: elsewhere, or started without the launcher
         assert_eq!(
             m("\"/home/jo/old/mint\" launch %command% -NOSPLASH -disablemodding"),
@@ -266,16 +253,16 @@ mod tests {
         );
         assert_eq!(
             m(r#""C:\old\mint.exe" launch %command% -dx11"#),
-            format!("{w} -dx11 -disablemodding -nosplash")
+            format!("{w} -dx11")
         );
         assert_eq!(
             m(r#""C:\Tools\MINT.EXE" LAUNCH %command% -dx11"#),
-            format!("{w} -dx11 -disablemodding -nosplash")
+            format!("{w} -dx11")
         );
         // Linux starts mint directly; switching replaces the launcher too
         assert_eq!(
             with_wrapper(&m("-dx11"), r#""/home/jo/.local/share/mint/mint" launch"#),
-            r#""/home/jo/.local/share/mint/mint" launch %command% -dx11 -disablemodding -nosplash"#
+            r#""/home/jo/.local/share/mint/mint" launch %command% -dx11"#
         );
         // idempotent
         let once = m("gamemoderun %command% -dx11");
@@ -295,7 +282,7 @@ mod tests {
         );
         assert_eq!(
             launch_options(&out).unwrap(),
-            format!("{LAUNCHER} %command% -disablemodding -nosplash")
+            format!("{LAUNCHER} %command%")
         );
     }
 }

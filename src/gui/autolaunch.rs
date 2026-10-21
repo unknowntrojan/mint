@@ -3,7 +3,8 @@
 //! a newer mint and mod updates, installs the mods if anything changed since the last install, and
 //! then counts down to Play. Any click stops the countdown. "Play without mods" takes the mods out
 //! of the game first, "Open mod manager" switches to the full window. Steam's Safe Mode entry
-//! (`-fsdsafemode`) skips all of it and starts the game without mods.
+//! (`-fsdsafemode`) skips all of it and starts the game without mods. The game always gets
+//! [`FLAGS`], so Steam's launch options don't have to carry them.
 //!
 //! The process stays until the game exits, so Steam keeps counting the game as running.
 
@@ -20,9 +21,21 @@ use tracing::{error, info};
 
 use super::{App, LastAction, LastActionStatus, SpecFetchProgress, message};
 use crate::remote;
+use crate::setup::vdf::FLAGS;
 
 /// The game mint started; `gui` waits for it after the window closed.
 pub(super) static GAME: Mutex<Option<Child>> = Mutex::new(None);
+
+/// The game's command line from Steam, with whatever of [`FLAGS`] it lacks at the end (where
+/// Steam puts the launch options after `%command%`, too).
+pub(super) fn with_game_flags(mut args: Vec<String>) -> Vec<String> {
+    for flag in FLAGS {
+        if !args.iter().any(|a| a.eq_ignore_ascii_case(flag)) {
+            args.push(flag.into());
+        }
+    }
+    args
+}
 
 /// In the data directory: what the last successful install was (see [`App::install_fingerprint`]).
 const INSTALLED: &str = "installed-mods";
@@ -547,7 +560,29 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::short_error;
+    use super::{short_error, with_game_flags};
+
+    #[test]
+    fn the_game_gets_the_flags_once() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            with_game_flags(args(&[r"C:\DRG\FSD.exe", "-dx12"])),
+            args(&[r"C:\DRG\FSD.exe", "-dx12", "-disablemodding", "-nosplash"])
+        );
+        // Safe Mode has one, launch options from before both
+        assert_eq!(
+            with_game_flags(args(&["FSD.exe", "-disablemodding", "-fsdsafemode"])),
+            args(&["FSD.exe", "-disablemodding", "-fsdsafemode", "-nosplash"])
+        );
+        let before = args(&[
+            "proton",
+            "waitforexitandrun",
+            "FSD.exe",
+            "-NoSplash",
+            "-disablemodding",
+        ]);
+        assert_eq!(with_game_flags(before.clone()), before);
+    }
 
     #[test]
     fn errors_are_cut_to_their_first_line() {

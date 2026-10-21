@@ -234,45 +234,54 @@ impl Paths {
             .unwrap_or(true)
     }
 
-    /// "No, and stop asking" when mint offered to put itself back into the launch options.
-    /// Running setup again still puts it back.
-    pub fn stop_steam_prompt(&self) -> io::Result<()> {
+    /// Remembers whether DRG should start through mint. Skip in setup and "No, and stop asking"
+    /// say no; setup then leaves Steam alone, and mint stops offering to put itself back.
+    pub fn set_steam_launch_wanted(&self, wanted: bool) -> io::Result<()> {
         let mut settings = self.marker_settings();
-        settings["steam_prompt"] = false.into();
+        settings["steam_launch"] = wanted.into();
         fs::write(self.marker(), serde_json::to_vec_pretty(&settings)?)
     }
 
-    /// Whether mint should offer to put itself back into DRG's launch options: setup put it there
-    /// for `exe` (the running mint), DRG is the Steam version, and a Steam user's options don't
-    /// start mint (anymore). Not after Skip in setup, or "No, and stop asking".
-    pub fn launch_options_missing(&self, exe: &Path) -> bool {
-        if !self.set_up_before()
-            || !self.steam_launch_wanted()
-            || self.marker_settings()["steam_prompt"].as_bool() == Some(false)
-        {
-            return false;
-        }
+    /// Whether `exe` (the running mint) is the mint setup installed and DRG the Steam version: only
+    /// then is DRG's Steam launch up to it.
+    pub fn manages_steam_launch(&self, exe: &Path) -> bool {
         let same = matches!(
             (fs::canonicalize(exe), fs::canonicalize(self.exe())),
             (Ok(a), Ok(b)) if a == b
         );
-        if !same || !configured_pak(self).is_some_and(|p| check_pak(&p).is_ok_and(|xbox| !xbox)) {
-            return false;
-        }
+        same && !self.steam_configs.is_empty()
+            && configured_pak(self).is_some_and(|p| check_pak(&p).is_ok_and(|xbox| !xbox))
+    }
+
+    /// Whether DRG's launch options in each Steam user's config start mint. Steam users without
+    /// DRG settings never played it here and are left out.
+    fn through_mint(&self) -> Vec<bool> {
         let wanted = format!("{} %command%", self.wrapper());
-        self.steam_configs.iter().any(|config| {
-            match fs::read_to_string(config)
-                .map_err(|e| e.to_string())
-                .and_then(|text| vdf::drg_launch_options(&text))
-            {
-                // a Steam user without DRG settings never played it here
-                Ok(options) => options.is_some_and(|o| !o.contains(&wanted)),
-                Err(e) => {
-                    warn!("{}: {e}", config.display());
-                    false
+        self.steam_configs
+            .iter()
+            .filter_map(|config| {
+                match fs::read_to_string(config)
+                    .map_err(|e| e.to_string())
+                    .and_then(|text| vdf::drg_launch_options(&text))
+                {
+                    Ok(options) => options.map(|o| o.contains(&wanted)),
+                    Err(e) => {
+                        warn!("{}: {e}", config.display());
+                        None
+                    }
                 }
-            }
-        })
+            })
+            .collect()
+    }
+
+    /// Whether mint should offer to put itself back into DRG's launch options: setup put it there
+    /// for `exe`, nobody said not to (see [`Self::set_steam_launch_wanted`]), and a Steam user's
+    /// options don't start mint (anymore).
+    pub fn launch_options_missing(&self, exe: &Path) -> bool {
+        self.set_up_before()
+            && self.steam_launch_wanted()
+            && self.manages_steam_launch(exe)
+            && self.through_mint().contains(&false)
     }
 
     /// Whether there's a mint setup that importing would move aside.
@@ -893,15 +902,17 @@ mod tests {
         fs::create_dir_all(other.parent().unwrap()).unwrap();
         fs::write(&other, b"mint").unwrap();
         assert!(!paths.launch_options_missing(&other));
+        assert!(!paths.manages_steam_launch(&other));
         // a Steam user who never played DRG here
         fs::write(&config, "\"UserLocalConfigStore\" { \"Software\" { } }").unwrap();
         assert!(!paths.launch_options_missing(&exe));
 
+        // "No, and stop asking"
         localconfig(&config, "-dx11");
-        paths.stop_steam_prompt().unwrap();
+        paths.set_steam_launch_wanted(false).unwrap();
         assert!(!paths.launch_options_missing(&exe));
+        assert!(!paths.steam_launch_wanted());
         // the rest of the marker stays
-        assert!(paths.steam_launch_wanted());
         assert!(paths.marker_settings()["installed"].is_u64());
 
         // Skip in setup
@@ -916,7 +927,7 @@ mod tests {
         fs::write(paths.marker(), b"").unwrap();
         localconfig(&paths.steam_configs[0], "-disablemodding -nosplash");
         assert!(paths.launch_options_missing(&paths.exe()));
-        paths.stop_steam_prompt().unwrap();
+        paths.set_steam_launch_wanted(false).unwrap();
         assert!(!paths.launch_options_missing(&paths.exe()));
     }
 

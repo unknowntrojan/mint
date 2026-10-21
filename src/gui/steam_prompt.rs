@@ -166,7 +166,7 @@ impl App {
             }
             Some(Answer::StopAsking) => {
                 info!("not putting mint back into DRG's launch options, and not asking again");
-                if let Err(e) = prompt.paths.stop_steam_prompt() {
+                if let Err(e) = prompt.paths.set_steam_launch_wanted(false) {
                     warn!("remembering that: {e}");
                 }
                 self.steam_prompt = None;

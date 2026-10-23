@@ -150,8 +150,8 @@ pub fn set_launch_options(
 pub fn with_wrapper(current: &str, wrapper: &str) -> String {
     let current = without_mint(current);
     // without %command%, Steam passes the options to the game
-    let (before, after) = match current.find("%command%") {
-        Some(i) => (&current[..i], &current[i + "%command%".len()..]),
+    let (before, after) = match command().find(&current) {
+        Some(m) => (&current[..m.start()], &current[m.end()..]),
         None => ("", &*current),
     };
     let mut out = format!("{before}{wrapper} %command%");
@@ -161,6 +161,23 @@ pub fn with_wrapper(current: &str, wrapper: &str) -> String {
         out.push_str(after);
     }
     out
+}
+
+/// Steam finds `%command%` in any case.
+fn command() -> &'static regex::Regex {
+    static COMMAND: OnceLock<regex::Regex> = OnceLock::new();
+    COMMAND.get_or_init(|| regex::Regex::new("(?i)%command%").unwrap())
+}
+
+/// Whether `options` start the game through `wrapper` (see [`with_wrapper`]), however
+/// `%command%` is written. With `windows`, the path's case doesn't matter either.
+pub fn starts_through(options: &str, wrapper: &str, windows: bool) -> bool {
+    let normal = |s: &str| {
+        let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let s = command().replace_all(&s, "%command%").into_owned();
+        if windows { s.to_lowercase() } else { s }
+    };
+    normal(options).contains(&normal(&format!("{wrapper} %command%")))
 }
 
 /// `current` without mint in front of `%command%`, wherever it was and however it was started.
@@ -179,8 +196,16 @@ fn without_mint(current: &str) -> std::borrow::Cow<'_, str> {
 /// without it to the game all the same.
 pub fn without_wrapper(current: &str) -> String {
     let current = without_mint(current);
-    let current = match current.strip_prefix("%command%") {
-        Some(rest) if rest.is_empty() || rest.starts_with(char::is_whitespace) => rest,
+    let current = match command().find(&current) {
+        Some(m)
+            if m.start() == 0
+                && current[m.end()..]
+                    .chars()
+                    .next()
+                    .is_none_or(char::is_whitespace) =>
+        {
+            &current[m.end()..]
+        }
         _ => &current,
     };
     with_flags(current)
@@ -300,6 +325,54 @@ mod tests {
         // idempotent
         let once = m("gamemoderun %command% -dx11");
         assert_eq!(m(&once), once);
+        // Steam takes %command% in any case
+        assert_eq!(
+            m("gamemoderun %COMMAND% -dx11"),
+            format!("gamemoderun {w} -dx11")
+        );
+        assert_eq!(
+            m(&format!("{LAUNCHER} %COMMAND% -dx11")),
+            format!("{w} -dx11")
+        );
+    }
+
+    #[test]
+    fn mint_is_found_however_its_written() {
+        let linux = r#""/home/jo/.local/share/mint/mint" launch"#;
+        assert!(starts_through(
+            &format!("{LAUNCHER} %command% -dx11"),
+            LAUNCHER,
+            true
+        ));
+        assert!(starts_through(
+            &format!("{LAUNCHER} %COMMAND% -dx11"),
+            LAUNCHER,
+            true
+        ));
+        assert!(starts_through(
+            &format!("gamemoderun {LAUNCHER}  %Command%"),
+            LAUNCHER,
+            true
+        ));
+        // Windows paths aren't case-sensitive
+        assert!(starts_through(
+            r#""c:\users\jo doe\appdata\local\mint\MINT-LAUNCH.EXE" %command%"#,
+            LAUNCHER,
+            true
+        ));
+        assert!(starts_through(&format!("{linux} %COMMAND%"), linux, false));
+        // Linux paths are
+        assert!(!starts_through(
+            r#""/home/jo/.local/share/MINT/mint" launch %command%"#,
+            linux,
+            false
+        ));
+        assert!(!starts_through("-dx11 %command%", LAUNCHER, true));
+        assert!(!starts_through(
+            &format!("{LAUNCHER} -dx11"),
+            LAUNCHER,
+            true
+        ));
     }
 
     #[test]
@@ -325,6 +398,14 @@ mod tests {
         assert_eq!(without_wrapper(&m("")), "-disablemodding -nosplash");
         // no mint in there
         assert_eq!(without_wrapper("-dx11"), "-dx11 -disablemodding -nosplash");
+        assert_eq!(
+            without_wrapper(&format!("{LAUNCHER} %COMMAND%")),
+            "-disablemodding -nosplash"
+        );
+        assert_eq!(
+            without_wrapper("%COMMAND% -dx11"),
+            "-dx11 -disablemodding -nosplash"
+        );
         assert_eq!(
             without_wrapper("%command%-foo"),
             "%command%-foo -disablemodding -nosplash"

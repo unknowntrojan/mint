@@ -257,7 +257,7 @@ impl Paths {
     /// Whether DRG's launch options in each Steam user's config start mint. Steam users without
     /// DRG settings never played it here and are left out.
     fn through_mint(&self) -> Vec<bool> {
-        let wanted = format!("{} %command%", self.wrapper());
+        let wrapper = self.wrapper();
         self.steam_configs
             .iter()
             .filter_map(|config| {
@@ -265,7 +265,16 @@ impl Paths {
                     .map_err(|e| e.to_string())
                     .and_then(|text| vdf::drg_launch_options(&text))
                 {
-                    Ok(options) => options.map(|o| o.contains(&wanted)),
+                    Ok(options) => options.map(|o| {
+                        let through = vdf::starts_through(&o, &wrapper, cfg!(windows));
+                        if !through {
+                            info!(
+                                "{}: DRG's launch options {o:?} don't start mint",
+                                config.display()
+                            );
+                        }
+                        through
+                    }),
                     Err(e) => {
                         warn!("{}: {e}", config.display());
                         None
@@ -915,6 +924,10 @@ mod tests {
         let paths = set_up(dir.path(), true);
         let (config, exe) = (paths.steam_configs[0].clone(), paths.exe());
         localconfig(&config, &format!("{} %command% -dx11", paths.wrapper()));
+        assert!(paths.launcher_installed());
+        assert!(!paths.launch_options_missing(&exe));
+        // changed by hand, but Steam still starts mint
+        localconfig(&config, &format!("{}   %COMMAND% -dx11", paths.wrapper()));
         assert!(paths.launcher_installed());
         assert!(!paths.launch_options_missing(&exe));
 
